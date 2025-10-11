@@ -1,0 +1,35 @@
+{
+  "name": "@anclatechs/sql-buns-migrate",
+  "version": "1.0.0",
+  "description": "Official migration and schema management tool for anclatechs/sql-buns. Designed to define, version, and evolve your database schema seamlessly, supports PostgreSQL, MySQL, and SQLite.",
+  "main": "src/dist/index.js",
+  "types": "src/dist/index.d.ts",
+  "bin": {
+    "buns-migrate": "./bin/buns-migrate.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AnclaTechs/sql-buns-migrate.git"
+  },
+  "keywords": [
+    "sql",
+    "postgres",
+    "mysql",
+    "sqlite",
+    "node",
+    "database",
+    "migration",
+    "anclatechs"
+  ],
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Ancla Technologies",
+  "license": "MIT",
+  "dependencies": {
+    "@anclatechs/sql-buns": "^1.0.6",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.1",
+    "dotenv": "^17.2.3"
+  }
+}
