@@ -22,6 +22,30 @@ function _createField(type, options = {}, defaults = {}) {
   return field;
 }
 
+function _normalizeSQLForJSON(sql) {
+  let clean = sql.trim();
+
+  if (
+    (clean.startsWith("`") && clean.endsWith("`")) ||
+    (clean.startsWith('"') && clean.endsWith('"')) ||
+    (clean.startsWith("'") && clean.endsWith("'"))
+  ) {
+    clean = clean.slice(1, -1);
+  }
+
+  clean = clean.replace(/\s+/g, " ").trim();
+
+  clean = clean.replace(/"/g, "'");
+
+  clean = clean.replace(/;?\s*$/, ";");
+
+  return clean;
+}
+
+function _formatSQLArray(statements) {
+  return statements.map((sql) => _normalizeSQLForJSON(sql));
+}
+
 export const IntegerField = (options = {}) => {
   return _createField("INTEGER", options, {
     autoIncrement: false,
@@ -50,16 +74,30 @@ export const TextField = (options = {}) => {
 };
 
 export const EnumField = (options = {}) => {
-  if (
-    !options.choices ||
-    !Array.isArray(options.choices) ||
-    options.choices.length === 0
-  ) {
-    throw new Error("EnumField requires a non-empty 'choices' array.");
-  }
+  const supportedENUMDialects = ["mysql", "sqlite", "postgres"];
 
   const { choices, default: def, typeName, ...rest } = options;
 
+  const dialect = process.env.DATABASE_ENGINE;
+
+  // Normalize and validate dialect
+  const engine = (dialect || "").toLowerCase();
+
+  if (!supportedENUMDialects.includes(engine)) {
+    const supported = supportedENUMDialects.join(", ");
+    throw new Error(
+      `❌ Unsupported or missing DATABASE_ENGINE for EnumField.\n` +
+        `Received: "${dialect || "undefined"}"\n` +
+        `Supported engines: ${supported}`
+    );
+  }
+
+  // Validate choices
+  if (!Array.isArray(choices) || choices.length === 0) {
+    throw new Error("EnumField requires a non-empty 'choices' array.");
+  }
+
+  // Validate default
   if (def && !choices.includes(def)) {
     throw new Error(
       `Default value '${def}' is not one of the allowed choices: ${choices.join(
@@ -68,20 +106,44 @@ export const EnumField = (options = {}) => {
     );
   }
 
-  // Build ENUM SQL definition for MySQL/SQLite
-  const inlineType = `ENUM(${choices.map((c) => `'${c}'`).join(", ")})`;
+  // Handle database-specific type definitions
+  let inlineType;
+  let enumTypeName = null;
 
-  // PostgreSQL style uses CREATE TYPE + reference
-  const pgTypeName =
-    typeName || `enum_${Math.random().toString(36).substring(2, 8)}`;
+  switch (dialect.toLowerCase()) {
+    case "mysql":
+      inlineType = `ENUM(${choices.map((c) => `'${c}'`).join(", ")})`;
+      break;
 
+    case "sqlite":
+      // SQLite doesn't support ENUM natively, so we simulate it with CHECK
+      inlineType = `TEXT CHECK(${rest.name || "value"} IN (${choices
+        .map((c) => `'${c}'`)
+        .join(", ")}))`;
+      break;
+
+    case "postgres":
+    case "postgresql":
+      enumTypeName =
+        typeName || `enum_${Math.random().toString(36).substring(2, 8)}`;
+      inlineType = enumTypeName; // references a type to be created elsewhere
+      break;
+
+    default:
+      throw new Error(
+        `Unsupported SQL dialect '${dialect}'. Use 'mysql', 'sqlite', or 'postgres'.`
+      );
+  }
+
+  // ✅ Build field definition (assuming _createField wraps metadata)
   const field = _createField(inlineType, {
     ...rest,
     choices,
     default: def,
-    enumTypeName: pgTypeName, // used for PostgreSQL migration to emit CREATE TYPE
+    enumTypeName,
   });
 
+  // ✅ JSON representation for migration or schema export
   field.toJSON = function () {
     const json = {
       type: inlineType,
@@ -89,6 +151,7 @@ export const EnumField = (options = {}) => {
       default: def,
       null: rest.null,
       comment: rest.comment,
+      dialect,
     };
     return _normalizeOptions(json);
   };
@@ -125,9 +188,20 @@ export const XmlField = (options = {}) => {
 };
 
 export function defineModel(name, fields, options = {}) {
+  const normalizedFields = {};
   const normalizedRelations = {};
   const normalizedTriggers = {};
   const { relations, triggers, meta } = options;
+
+  /** Normalize Fields */
+  for (const [fieldName, fieldDef] of Object.entries(fields)) {
+    const { type, ...options } = fieldDef;
+    if (typeof type === "function") {
+      normalizedFields[fieldName] = type(options);
+    } else {
+      normalizedFields[fieldName] = fieldDef;
+    }
+  }
 
   /**
    *  Validate & Normalize Relations
@@ -170,7 +244,9 @@ export function defineModel(name, fields, options = {}) {
 
       normalizedTriggers[key] = {
         ...mapping[key],
-        statements: Array.isArray(statements) ? statements : [statements],
+        statements: Array.isArray(statements)
+          ? _formatSQLArray(statements)
+          : _formatSQLArray([statements]),
       };
     }
   }
@@ -180,7 +256,7 @@ export function defineModel(name, fields, options = {}) {
    *  */
   const model = {
     name,
-    fields,
+    fields: normalizedFields,
     relations: normalizedRelations,
     triggers: normalizedTriggers,
     meta: meta || {},
@@ -192,7 +268,7 @@ export function defineModel(name, fields, options = {}) {
     toJSON() {
       // Remove helpText and comment from fields
       const filteredFields = Object.fromEntries(
-        Object.entries(fields).map(([key, field]) => {
+        Object.entries(normalizedFields).map(([key, field]) => {
           const { helpText, comment, ...rest } = field;
           return [
             key,

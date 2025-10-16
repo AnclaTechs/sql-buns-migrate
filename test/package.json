@@ -1,0 +1,14 @@
+{
+  "name": "test",
+  "version": "1.0.0",
+  "scripts": {
+    "migrate:generate": "node ../src/utils/generateMigration.js"
+  },
+  "dependencies": {
+    "@anclatechs/sql-buns": "^1.0.6",
+    "@anclatechs/sql-buns-migrate": "file:../"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": ""
+}

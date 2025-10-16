@@ -1,4 +1,4 @@
-const {
+import {
   defineModel,
   IntegerField,
   DecimalField,
@@ -13,9 +13,9 @@ const {
   UUIDField,
   JsonField,
   XmlField,
-} = require("../models/definition");
+} from "../models/definition.js";
 
-const Fields = {
+export const Fields = {
   IntegerField,
   DecimalField,
   FloatingPointField,
@@ -31,7 +31,4 @@ const Fields = {
   XmlField,
 };
 
-module.exports = {
-  defineModel,
-  Fields,
-};
+export { defineModel };

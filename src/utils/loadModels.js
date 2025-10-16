@@ -1,12 +1,12 @@
-const path = require("path");
-const fs = require("fs");
-const { resolveModelsPath } = require("./resolveModelsPath.js");
+import path from "path";
+import fs from "fs";
+import { resolveModelsPath } from "./resolveModelsPath.js";
 
 /**
  * Dynamically loads the user's model definitions ensuring file exists
  */
 export async function loadModels() {
-  const modelsPath = resolveModelsPath();
+  const modelsPath = await resolveModelsPath();
 
   if (!fs.existsSync(modelsPath)) {
     throw new Error(`❌ Models file not found at ${modelsPath}`);

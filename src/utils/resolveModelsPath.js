@@ -1,9 +1,9 @@
-require("dotenv").config();
-const path = require("path");
-const fs = require("fs");
-const { pool } = require("@anclatechs/sql-buns");
+import "dotenv/config";
+import path from "path";
+import fs from "fs";
+import { pool } from "@anclatechs/sql-buns";
 
-async function resolveModelsPath() {
+export async function resolveModelsPath() {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS _sqlbuns_migrations (
@@ -45,5 +45,3 @@ async function resolveModelsPath() {
 
   return resolved;
 }
-
-module.exports = { resolveModelsPath };

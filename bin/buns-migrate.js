@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-const { Command } = require("commander");
-const chalk = require("chalk");
-const { migrateUp, migrateDown, createMigration } = require("../src/index.js");
-const { resolveModelsPath } = require("../src/utils/resolveModelsPath.js");
+import { Command } from "commander";
+import chalk from "chalk";
+import { migrateUp, migrateDown, createMigration } from "../src/index.js";
+import { resolveModelsPath } from "../src/utils/resolveModelsPath.js";
 
 const program = new Command();
 
 (async () => {
   try {
-    const modelsPath = resolveModelsPath();
+    const modelsPath = await resolveModelsPath();
     console.log(chalk.cyan(`📦 Models file detected at: ${modelsPath}`));
 
     program

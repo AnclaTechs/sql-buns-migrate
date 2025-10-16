@@ -92,7 +92,7 @@ declare module "@anclatechs/sql-buns-migrate" {
 
   export interface ModelMeta {
     /** Custom table name override */
-    db_table?: string;
+    tableName?: string;
 
     /** Automatically add created_at / updated_at fields */
     timestamps?: boolean;
@@ -302,29 +302,32 @@ declare module "@anclatechs/sql-buns-migrate" {
     assertParams(inputs: ParamValidationObject[]): void;
   }
 
-  /**
-   * Options to customize a model’s behavior, structure, and database interactions.
-   */
-  export interface DefineModelOptions<M = {}> {
-    /** Defines relationships (hasOne, hasMany, manyToMany) with other models. */
-    relations?: ModelRelations;
-
-    /** SQL trigger definitions to execute before/after INSERT, UPDATE, or DELETE operations. */
-    triggers?: ModelTriggers;
-
-    /** Metadata for the model such as table name, comments, and index definitions. */
-    meta?: ModelMeta;
-
-    /**
-     * Custom methods bound to the model instance.
-     * Each method automatically receives the model context (`this`) so it can access
-     * helpers like `this.assertParams`, `this.meta`, etc.
-     * */
-   methods?: {
-    [K in keyof M]: (this: BaseModelContext & M, ...args: any[]) => any;
-  } & ThisType<BaseModelContext & M>;
+  export type MethodsThis<M> = BaseModelContext & {
+    methods: { [K in keyof M]: M[K]};
   }
 
+  /**
+ * Full model type: base + fields + methods object + direct method access.
+ */
+export type Model<M = {}> = BaseModelContext & {
+  fields: Record<string, FieldDefinition>;
+  methods: { [K in keyof M]: M[K] & ThisType<Model<M>> };  // Binds 'this' to full model for IntelliSense
+} & M;
+
+/**
+ * Options for defineModel (non-generic for clean inference).
+ */
+export interface DefineModelOptions<M ={}> {
+  relations?: ModelRelations;
+  triggers?: ModelTriggers;
+  meta?: ModelMeta;
+  methods?: {
+    [K in keyof M]: (this: MethodsThis<M>, ...args: Parameters<M[K]>) => ReturnType<M[K]>
+  } & ThisType<MethodsThis<M>>
+}
+
+
+ 
   /**
    * Defines a new SQL model structure with its fields, relations, triggers, and metadata.
    *
@@ -343,7 +346,7 @@ declare module "@anclatechs/sql-buns-migrate" {
    *     beforeInsert: ["SET NEW.created_at = CURRENT_TIMESTAMP"]
    *   },
    *   meta: {
-   *     db_table: "app_users",
+   *     tableName: "app_users",
    *     comment: "Registered application users",
    *     indexes: [{ fields: ["email"], unique: true }]
    *   }
@@ -357,40 +360,40 @@ declare module "@anclatechs/sql-buns-migrate" {
    * ```
    */
 export function defineModel<
-  M extends Record<string, (...args: any[]) => any> = {},
-  O = {}
+  M extends Record<string, (...args: any[]) => any> = {}
 >(
   name: string,
   fields: Record<string, FieldDefinition | CustomEnumFieldDefinition>,
-  options?: O & (DefineModelOptions<M> & { methods?: M })
-): BaseModelContext & {
-  name: string;
-  fields: Record<string, FieldDefinition>;
-  relations?: ModelRelations;
-  triggers?: ModelTriggers;
-  meta?: ModelMeta;
-  methods: M;
-} & M {
+  options?: DefineModelOptions<M>
+): Model<M> {
   // Base model object
   const model: any = {
     name,
-    fields,  // Note: You may need to cast if CustomEnumFieldDefinition isn't assignable to FieldDefinition
+    fields: fields as Record<string, FieldDefinition>,  // Cast for CustomEnumFieldDefinition
     relations: options?.relations,
     triggers: options?.triggers,
     meta: options?.meta,
     methods: {},
+
+    // Runtime impl for assertParams (matches interface overloads)
+    assertParams(input: ParamValidationObject): void {
+    },
+    assertParams(inputs: ParamValidationObject[]): void {
+    },
   };
 
-  // Bind custom methods
-  if ((options as any)?.methods) {
-    for (const [key, fn] of Object.entries((options as any).methods)) {
-      model.methods[key] = fn.bind(model);
-      // Optional: model[key] = fn.bind(model); // For direct User.create() access
+  // Bind custom methods (with 'this' as full model)
+    for (const [key, fn] of Object.entries(options.methods || {})) {
+      const boundFn = fn.bind(model);
+      model.methods[key] = boundFn;
+      model[key] = boundFn;  // Enables direct User.getUserProfile()
     }
-  }
 
   return model;
 }
+
+
+
   //COMMON FIELD HELPERS
   export const Fields: {
     IntegerField: (options?: Partial<FieldDefinition>) => FieldDefinition;

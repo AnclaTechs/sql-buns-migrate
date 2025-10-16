@@ -1,6 +1,7 @@
+const { pool, getSingleRow } = require("@anclatechs/sql-buns");
 const { defineModel, Fields } = require("@anclatechs/sql-buns-migrate");
 const { UserModelTriggers } = require("./signals");
-const { getSingleRow, pool } = require("@anclatechs/sql-buns");
+const { GAME_LEVELS } = require("./constants");
 
 const Users = defineModel(
   "users",
@@ -13,7 +14,7 @@ const Users = defineModel(
     level: {
       type: Fields.EnumField,
       nullable: false,
-      choices: ["NOOB", "INTERMEDIATE", "EXPERT", "KING", "EMPEROR"],
+      choices: GAME_LEVELS,
       default: "NOOB",
     },
     bonus_balance: {
@@ -31,16 +32,15 @@ const Users = defineModel(
       afterUpdate: UserModelTriggers.AFTER_UPDATE,
     },
     meta: {
-      db_table: "oldapp_users",
+      dbTable: "oldapp_users",
       comment: "Users migrated from v0",
       indexes: [{ fields: ["email"], unique: true }],
     },
     methods: {
       async getUserProfile(id) {
         this.assertParams({ id, required: true, type: "number", min: 1 });
-
         const user = await getSingleRow("SELECT * FROM ?? WHERE id = ?", [
-          this.meta.db_table,
+          this.meta.tableName,
           id,
         ]);
         if (!user) return null;
@@ -54,12 +54,12 @@ const Users = defineModel(
           {
             newLevel,
             required: true,
-            enum: ["NOOB", "INTERMEDIATE", "EXPERT", "KING", "EMPEROR"],
+            enum: GAME_LEVELS,
           },
         ]);
 
         await pool.query("UPDATE ?? SET level = ? WHERE id = ?", [
-          this.meta.db_table || "users",
+          this.meta.tableName,
           newLevel,
           id,
         ]);

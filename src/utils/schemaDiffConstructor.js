@@ -1,13 +1,15 @@
-const readline = require("readline");
+import readline from "readline";
 
 function _handleMetaDiff(table, oldMeta = {}, newMeta = {}, sql = []) {
   // --- Table rename ---
   if (
-    oldMeta.db_table &&
-    newMeta.db_table &&
-    oldMeta.db_table !== newMeta.db_table
+    oldMeta.tableName &&
+    newMeta.tableName &&
+    oldMeta.tableName !== newMeta.tableName
   ) {
-    sql.push(`ALTER TABLE ${oldMeta.db_table} RENAME TO ${newMeta.db_table};`);
+    sql.push(
+      `ALTER TABLE ${oldMeta.tableName} RENAME TO ${newMeta.tableName};`
+    );
   }
 
   // --- Table comment ---
@@ -22,8 +24,27 @@ function _handleMetaDiff(table, oldMeta = {}, newMeta = {}, sql = []) {
   const oldIndexes = oldMeta.indexes || [];
   const newIndexes = newMeta.indexes || [];
 
-  const oldIndexMap = Object.fromEntries(oldIndexes.map((i) => [i.name, i]));
-  const newIndexMap = Object.fromEntries(newIndexes.map((i) => [i.name, i]));
+  function normalizeIndexes(indexes, table) {
+    return indexes.map((idx) => {
+      if (!idx.name) {
+        const fieldPart = Array.isArray(idx.fields)
+          ? idx.fields.join("_")
+          : idx.field || "field";
+        idx.name = `idx_${table}_${fieldPart}`;
+      }
+      return idx;
+    });
+  }
+
+  const normalizedOldIndexes = normalizeIndexes(oldIndexes, table);
+  const normalizedNewIndexes = normalizeIndexes(newIndexes, table);
+
+  const oldIndexMap = Object.fromEntries(
+    normalizedOldIndexes.map((i) => [i.name, i])
+  );
+  const newIndexMap = Object.fromEntries(
+    normalizedNewIndexes.map((i) => [i.name, i])
+  );
 
   // Add new indexes
   for (const idx of newIndexes) {
@@ -265,49 +286,193 @@ function _handleTriggersDiff(
   newTriggers = {},
   sql = []
 ) {
-  for (const [key, trig] of Object.entries(newTriggers)) {
-    const oldTrig = oldTriggers[key];
-    if (JSON.stringify(oldTrig) === JSON.stringify(trig)) continue;
-
-    const triggerName = `trg_${table}_${trig.event.toLowerCase()}_${trig.timing.toLowerCase()}`;
-    sql.push(`DROP TRIGGER IF EXISTS ${triggerName} ON ${table};`);
-
-    trig.statements.forEach((statement, idx) => {
-      sql.push(`
-        CREATE TRIGGER ${triggerName}_${idx}
-        ${trig.timing} ${trig.event}
-        ON ${table}
-        FOR EACH ROW
-        EXECUTE FUNCTION ${statement};
-      `);
+  // Normalize an object of triggers (preserving insertion order) into an array
+  // Each item will have:
+  // - key: original key from object
+  // - event, timing (uppercased for comparison / lowercased for name)
+  // - statements: array
+  // - order: numeric position in the list
+  // - baseName: trg_<table>_<event>_<timing>_<order>
+  const normalize = (triggers) => {
+    return Object.entries(triggers).map(([key, trig], order) => {
+      const event = (trig.event || "").toUpperCase();
+      const timing = (trig.timing || "").toUpperCase();
+      const statements = Array.isArray(trig.statements) ? trig.statements : [];
+      const baseName = `trg_${table}_${event.toLowerCase()}_${timing.toLowerCase()}`;
+      return { key, event, timing, statements, order, baseName, raw: trig };
     });
+  };
+
+  const oldList = normalize(oldTriggers);
+  const newList = normalize(newTriggers);
+
+  // Build maps by baseName for quick lookup
+  const oldMap = Object.fromEntries(oldList.map((t) => [t.baseName, t]));
+  const newMap = Object.fromEntries(newList.map((t) => [t.baseName, t]));
+
+  // 1) Drop triggers that existed previously but do not exist in the new list (by baseName).
+  //    We must drop each per-statement trigger (baseName_0, baseName_1, ...)
+  for (const oldTrig of oldList) {
+    if (!newMap[oldTrig.baseName]) {
+      for (let si = 0; si < oldTrig.statements.length; si++) {
+        const dropName = `${oldTrig.baseName}_${si}`;
+        sql.push(`DROP TRIGGER IF EXISTS ${dropName} ON ${table};`);
+      }
+    }
   }
+
+  // 2) For every new trigger (in order), compare to old:
+  //    - If exact same (same number & text of statements and same order), do nothing.
+  //    - Otherwise drop existing (if any) and recreate each statement trigger
+  newList.forEach((newTrig) => {
+    const oldTrig = oldMap[newTrig.baseName];
+
+    const sameStatements =
+      oldTrig &&
+      oldTrig.statements.length === newTrig.statements.length &&
+      oldTrig.statements.every((s, i) => s === newTrig.statements[i]);
+
+    // If oldTrig exists and statements are identical and the baseName includes the same order,
+    // we consider it unchanged and keep it (so order is respected).
+    if (oldTrig && sameStatements) {
+      // unchanged — do nothing
+      return;
+    }
+
+    // Otherwise drop any existing triggers with the same baseName (if present)
+    // Note: dropping by exact per-statement name keeps it safe and precise.
+    if (oldTrig) {
+      for (let si = 0; si < oldTrig.statements.length; si++) {
+        const dropName = `${oldTrig.baseName}_${si}`;
+        sql.push(`DROP TRIGGER IF EXISTS ${dropName} ON ${table};`);
+      }
+    } else {
+      // If there was no oldTrig with same baseName there might still exist triggers
+      // with a different baseName pattern for the same event/timing. We do not
+      // auto-drop those here because we only drop triggers we know are obsolete.
+      // (Optional: you may scan oldList for same event/timing but different order and drop them.)
+    }
+
+    // Recreate new statements as per-statement triggers named baseName_<idx>
+    newTrig.statements.forEach((statement, idx) => {
+      const createName = `${newTrig.baseName}_${idx}`;
+      // Use the preserved timing & event for the CREATE statement.
+      // Trim and normalize spacing to keep SQL tidy.
+      const timing = newTrig.timing;
+      const event = newTrig.event;
+
+      sql.push(
+        `CREATE TRIGGER ${createName}\n  ${timing} ${event}\n  ON ${table}\n  FOR EACH ROW\n  EXECUTE FUNCTION ${statement};`
+      );
+    });
+  });
+
+  return sql;
+}
+
+export function _generateCreateTableSQL(table, newModel, sql = []) {
+  const columns = [];
+  const pk = [];
+
+  const added = Object.keys(newModel.fields);
+
+  for (const col of added) {
+    const def = newModel.fields[col];
+    let columnSQLdef = `${col}`;
+
+    // 1️⃣ Map field type
+    columnSQLdef += " " + def.type;
+
+    // 2️⃣ Nullability
+    const nullable = def.nullable === true; // explicitly nullable
+    const notNull = !nullable; // default is NOT NULL
+
+    if (notNull) columnSQLdef += " NOT NULL";
+
+    if (def.primaryKey) pk.push(col);
+    if (def.autoIncrement) columnSQLdef += " AUTO_INCREMENT";
+
+    // 4️⃣ Default value
+    if (def.default !== undefined && def.default !== null) {
+      if (typeof def.default === "string") {
+        columnSQLdef += ` DEFAULT '${def.default}'`;
+      } else {
+        columnSQLdef += ` DEFAULT ${def.default}`;
+      }
+    }
+
+    columns.push(columnSQLdef);
+  }
+
+  // 5️⃣ Handle primary key
+  if (pk.length) {
+    columns.push(`PRIMARY KEY (${pk.map((f) => `"${f}"`).join(", ")})`);
+  }
+
+  // 6️⃣ Build table-level comment and index SQL
+  let tableSQL = `CREATE TABLE IF NOT EXISTS "${table}" (\n  ${columns.join(
+    ",\n  "
+  )}\n);`;
+
+  sql.push(tableSQL);
+
+  return tableSQL;
 }
 
 export async function diffSchemas(oldSchema, newSchema) {
   const sql = [];
   const warnings = [];
 
-  for (const [table, newModel] of Object.entries(newSchema)) {
-    const oldModel = oldSchema[table] || {};
+  for (const [_, newModel] of Object.entries(newSchema)) {
+    const table = newModel.meta?.tableName || newModel.name;
+    let tableIsNew;
 
-    // 1️⃣ Handle meta-level changes (table rename, comment, indexes)
+    const oldModel =
+      Object.values(oldSchema).find(
+        (m) => (m.meta?.tableName || m.name) === table
+      ) || {};
+
+    // If table doesn’t exist in old schema, create it
+    if (Object.entries(oldModel).length == 0) {
+      tableIsNew = true;
+      _generateCreateTableSQL(table, newModel, sql);
+    }
+
+    // Handle meta-level changes (table rename, comment, indexes)
     _handleMetaDiff(table, oldModel.meta, newModel.meta, sql);
 
-    // 2️⃣ Handle relationships
-    _handleRelationsDiff(table, oldModel.relations, newModel.relations, sql);
+    if (!tableIsNew) {
+      // Handle relationships
+      _handleRelationsDiff(table, oldModel.relations, newModel.relations, sql);
+    }
 
-    // 3️⃣ Handle fields (columns)
-    await _handleFieldDiff(
-      table,
-      oldModel.fields,
-      newModel.fields,
-      sql,
-      warnings
-    );
+    if (!tableIsNew) {
+      // Handle fields (columns)
+      await _handleFieldDiff(
+        table,
+        oldModel.fields,
+        newModel.fields,
+        sql,
+        warnings
+      );
+    }
 
-    // 4️⃣ Handle triggers
+    // Handle triggers
     _handleTriggersDiff(table, oldModel.triggers, newModel.triggers, sql);
+
+    // Handle dropped tables
+    for (const [_, oldModel] of Object.entries(oldSchema)) {
+      const table = oldModel.meta?.tableName || oldModel.name;
+
+      const existsInNew = Object.values(newSchema).some(
+        (m) => (m.meta?.tableName || m.name) === table
+      );
+
+      if (!existsInNew) {
+        sql.push(`DROP TABLE IF EXISTS ${table};`);
+        warnings.push(`Table '${table}' was removed.`);
+      }
+    }
   }
 
   return { sql, warnings };
