@@ -1,4 +1,24 @@
+import { getSingleRow } from "@anclatechs/sql-buns";
+import chalk from "chalk";
 import readline from "readline";
+
+async function _tableExistsInDb(table) {
+  try {
+    await getSingleRow(`SELECT 1 FROM ${table} LIMIT 1`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function _columnExistsInDb(table, column) {
+  try {
+    await getSingleRow(`SELECT ${column} FROM ${table} LIMIT 1`);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function _handleMetaDiff(table, oldMeta = {}, newMeta = {}, sql = []) {
   // --- Table rename ---
@@ -66,75 +86,129 @@ function _handleMetaDiff(table, oldMeta = {}, newMeta = {}, sql = []) {
   }
 }
 
-function _handleRelationsDiff(
+/**
+ * Process relations and defer if needed.
+ */
+export async function _handleRelationsDiff(
   table,
   oldRelations = {},
   newRelations = {},
+  allNewModels = {},
   sql = []
 ) {
+  const pendingRelations = [];
+
   const autoThroughName = (base, target) => `${base}_${target}_link`;
 
-  // --- Added or changed relations ---
+  // Inline: Decision logic as a nested helper (reusable within this scope)
+  const decideRelationAction = async (rel, currentTable) => {
+    const foreignTable = rel.model;
+    const foreignKey = rel.foreignKey;
+
+    const tableExists = await _tableExistsInDb(foreignTable);
+    const columnExists = tableExists
+      ? await _columnExistsInDb(foreignTable, foreignKey)
+      : false;
+
+    const targetInBatch = !!allNewModels[foreignTable];
+    const targetDefinesField =
+      targetInBatch && !!(allNewModels[foreignTable].fields || {})[foreignKey];
+
+    if (tableExists && columnExists) {
+      return { action: "createNow" };
+    }
+
+    if (targetInBatch && targetDefinesField) {
+      return { action: "defer" };
+    }
+
+    if (targetInBatch && !targetDefinesField) {
+      return {
+        action: "error",
+        error: new Error(
+          `Relation error: target model "${foreignTable}" is part of the current migration but does not define field "${foreignKey}" required by relation "${currentTable}.${rel.model}".`
+        ),
+      };
+    }
+
+    return {
+      action: "error",
+      error: new Error(
+        `Relation error: target table "${foreignTable}" does not exist in DB and is not part of the current migration batch (relation: ${currentTable}.${rel.model}).`
+      ),
+    };
+  };
+
+  // Inline: SQL generation logic (extracted for reuse in both loops)
+  const createRelationSql = (rel, baseTable) => {
+    if (rel.type === "hasOne" || rel.type === "hasMany") {
+      return [
+        `ALTER TABLE ${rel.model} ADD CONSTRAINT fk_${rel.model}_${rel.foreignKey} FOREIGN KEY (${rel.foreignKey}) REFERENCES ${baseTable}(id);`,
+        `CREATE INDEX IF NOT EXISTS idx_${rel.model}_${rel.foreignKey} ON ${rel.model} (${rel.foreignKey});`,
+      ];
+    } else if (rel.type === "manyToMany") {
+      return [
+        `CREATE TABLE IF NOT EXISTS ${rel.through} (
+          ${rel.foreignKey} INTEGER REFERENCES ${baseTable}(id),
+          ${rel.otherKey} INTEGER REFERENCES ${rel.model}(id),
+          PRIMARY KEY (${rel.foreignKey}, ${rel.otherKey})
+        );`,
+      ];
+    }
+    return [];
+  };
+
   for (const [relName, rel] of Object.entries(newRelations)) {
     const oldRel = oldRelations[relName];
+    if (JSON.stringify(oldRel) === JSON.stringify(rel)) continue;
 
-    // Auto-generate through table if not specified
     if (rel.type === "manyToMany" && !rel.through) {
       rel.through = autoThroughName(table, rel.model);
     }
 
-    // Skip unchanged
-    if (JSON.stringify(oldRel) === JSON.stringify(rel)) continue;
+    const { action, error } = await decideRelationAction(rel, table);
 
-    switch (rel.type) {
-      case "hasOne":
-      case "hasMany":
-        sql.push(
-          `ALTER TABLE ${rel.model} ADD CONSTRAINT fk_${rel.model}_${rel.foreignKey} FOREIGN KEY (${rel.foreignKey}) REFERENCES ${table}(id);`
-        );
-        sql.push(
-          `CREATE INDEX IF NOT EXISTS idx_${rel.model}_${rel.foreignKey} ON ${rel.model} (${rel.foreignKey});`
-        );
-        break;
+    if (error) {
+      console.error(chalk.red(`❌ ${error.name}:`), error.message);
+      process.exit();
+    }
 
-      case "manyToMany":
-        sql.push(
-          `CREATE TABLE IF NOT EXISTS ${rel.through} (
-            ${rel.foreignKey} UUID REFERENCES ${table}(id),
-            ${rel.otherKey} UUID REFERENCES ${rel.model}(id),
-            PRIMARY KEY (${rel.foreignKey}, ${rel.otherKey})
-          );`
-        );
-        break;
+    if (action === "defer") {
+      pendingRelations.push({ base: table, relName, rel });
+      continue;
+    }
 
-      default:
-        throw new Error(
-          `Unknown relation type "${rel.type}" in ${table}.${relName}`
-        );
+    if (action === "createNow") {
+      const relSql = createRelationSql(rel, table);
+      sql.push(...relSql);
     }
   }
 
-  // --- Removed relations ---
-  for (const [relName, oldRel] of Object.entries(oldRelations)) {
-    if (!newRelations[relName]) {
-      switch (oldRel.type) {
-        case "hasOne":
-        case "hasMany":
-          sql.push(
-            `ALTER TABLE ${oldRel.model} DROP CONSTRAINT IF EXISTS fk_${oldRel.model}_${oldRel.foreignKey};`
-          );
-          sql.push(
-            `DROP INDEX IF EXISTS idx_${oldRel.model}_${oldRel.foreignKey};`
-          );
-          break;
+  // Inline: Process deferred relations (re-run decision tree, then create)
+  // ✅ Once all tables are handled, if we have deferred ones, process them now
+  if (pendingRelations.length > 0) {
+    for (const { base, relName, rel } of pendingRelations) {
+      const { action, error } = await decideRelationAction(rel, base);
 
-        case "manyToMany":
-          const throughTable =
-            oldRel.through || autoThroughName(table, oldRel.model);
-          sql.push(`DROP TABLE IF EXISTS ${throughTable};`);
-          break;
+      if (error) {
+        console.error(chalk.red(`❌ ${error.name}:`), error.message);
+        process.exit();
       }
+      if (action !== "createNow") {
+        console.error(
+          chalk.red("Error"),
+          `Pending relation ${base}.${relName} still cannot be created (table/field missing).`
+        );
+        process.exit();
+      }
+
+      // Create the now-valid relation
+      const relSql = createRelationSql(rel, base);
+      sql.push(...relSql);
     }
+
+    // Clear after processing
+    pendingRelations.length = 0;
   }
 
   return sql;
@@ -442,11 +516,6 @@ export async function diffSchemas(oldSchema, newSchema) {
     _handleMetaDiff(table, oldModel.meta, newModel.meta, sql);
 
     if (!tableIsNew) {
-      // Handle relationships
-      _handleRelationsDiff(table, oldModel.relations, newModel.relations, sql);
-    }
-
-    if (!tableIsNew) {
       // Handle fields (columns)
       await _handleFieldDiff(
         table,
@@ -456,6 +525,16 @@ export async function diffSchemas(oldSchema, newSchema) {
         warnings
       );
     }
+
+    // Handle relationships
+    const newModelsObject = Object.entries(newSchema);
+    await _handleRelationsDiff(
+      table,
+      oldModel.relations,
+      newModel.relations,
+      newModelsObject,
+      sql
+    );
 
     // Handle triggers
     _handleTriggersDiff(table, oldModel.triggers, newModel.triggers, sql);
