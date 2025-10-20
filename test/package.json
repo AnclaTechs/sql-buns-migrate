@@ -5,7 +5,7 @@
     "migrate:generate": "node ../src/utils/generateMigration.js"
   },
   "dependencies": {
-    "@anclatechs/sql-buns": "^1.0.6",
+    "@anclatechs/sql-buns": "^1.0.7",
     "@anclatechs/sql-buns-migrate": "file:../"
   },
   "author": "",

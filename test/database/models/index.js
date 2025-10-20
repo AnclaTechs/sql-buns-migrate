@@ -3,6 +3,19 @@ const { defineModel, Fields } = require("@anclatechs/sql-buns-migrate");
 const { UserModelTriggers } = require("./signals");
 const { GAME_LEVELS } = require("./constants");
 
+const Games = defineModel(
+  "games",
+  {
+    id: { type: Fields.IntegerField, primaryKey: true, autoIncrement: true },
+    user_id: { type: Fields.IntegerField },
+    timestamp: { type: Fields.DateTimeField },
+  },
+  {
+    meta: {
+      tableName: "games",
+    },
+  }
+);
 const Users = defineModel(
   "users",
   {
@@ -32,7 +45,7 @@ const Users = defineModel(
       afterUpdate: UserModelTriggers.AFTER_UPDATE,
     },
     meta: {
-      dbTable: "oldapp_users",
+      tableName: "users",
       comment: "Users migrated from v0",
       indexes: [{ fields: ["email"], unique: true }],
     },
@@ -71,4 +84,5 @@ const Users = defineModel(
 
 module.exports = {
   Users,
+  Games,
 };
