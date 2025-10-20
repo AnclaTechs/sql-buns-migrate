@@ -31,7 +31,7 @@
   "author": "Ancla Technologies",
   "license": "MIT",
   "dependencies": {
-    "@anclatechs/sql-buns": "^1.0.6",
+    "@anclatechs/sql-buns": "^1.0.7",
     "chalk": "^5.6.2",
     "commander": "^14.0.1",
     "dotenv": "^17.2.3"

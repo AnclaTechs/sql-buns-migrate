@@ -1,6 +1,7 @@
 import { getSingleRow } from "@anclatechs/sql-buns";
 import chalk from "chalk";
 import readline from "readline";
+import { SUPPORTED_SQL_DIALECTS_TYPES } from "./constants.js";
 
 async function _tableExistsInDb(table) {
   try {
@@ -94,7 +95,8 @@ export async function _handleRelationsDiff(
   oldRelations = {},
   newRelations = {},
   allNewModels = {},
-  sql = []
+  sql = [],
+  deferedSql = []
 ) {
   const pendingRelations = [];
 
@@ -110,9 +112,18 @@ export async function _handleRelationsDiff(
       ? await _columnExistsInDb(foreignTable, foreignKey)
       : false;
 
-    const targetInBatch = !!allNewModels[foreignTable];
+    const tablesInBatch = allNewModels.reduce(
+      (resultantAccumulatingArray, [_, model]) => {
+        const table = model.meta?.tableName || model.name;
+        resultantAccumulatingArray[table] = model;
+        return resultantAccumulatingArray;
+      },
+      {}
+    );
+
+    const targetInBatch = !!tablesInBatch[foreignTable];
     const targetDefinesField =
-      targetInBatch && !!(allNewModels[foreignTable].fields || {})[foreignKey];
+      targetInBatch && !!(tablesInBatch[foreignTable].fields || {})[foreignKey];
 
     if (tableExists && columnExists) {
       return { action: "createNow" };
@@ -194,17 +205,26 @@ export async function _handleRelationsDiff(
         console.error(chalk.red(`❌ ${error.name}:`), error.message);
         process.exit();
       }
-      if (action !== "createNow") {
-        console.error(
-          chalk.red("Error"),
-          `Pending relation ${base}.${relName} still cannot be created (table/field missing).`
-        );
-        process.exit();
-      }
 
-      // Create the now-valid relation
-      const relSql = createRelationSql(rel, base);
-      sql.push(...relSql);
+      switch (action) {
+        case "defer":
+          // IF AT THIS STAGE NO ERROR IS Received, table is most likely in batch and should be included
+          // Create the now-valid relation but defer the sql.push
+          var relSql = createRelationSql(rel, base);
+          deferedSql.push(...relSql);
+          break;
+        case "createNow":
+          // Create the now-valid relation
+          var relSql = createRelationSql(rel, base);
+          sql.push(...relSql);
+          break;
+        default:
+          console.error(
+            chalk.red("Error"),
+            `Pending relation ${base}.${relName} still cannot be created (table/field missing).`
+          );
+          process.exit();
+      }
     }
 
     // Clear after processing
@@ -445,46 +465,90 @@ function _handleTriggersDiff(
 }
 
 export function _generateCreateTableSQL(table, newModel, sql = []) {
+  const engine = process.env.DATABASE_ENGINE;
   const columns = [];
   const pk = [];
+
+  // Helper: Dialect-specific adjustments
+  const getAutoIncrement = (def) => {
+    if (!def.autoIncrement) return "";
+    if (engine === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES) return "SERIAL"; // Replaces base type, e.g., INTEGER -> SERIAL
+    if (engine === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL) return "AUTO_INCREMENT";
+    if (engine === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) return "AUTOINCREMENT";
+    return "";
+  };
+
+  const getIdentifierQuote = (identifier) => {
+    if (
+      engine === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE &&
+      /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(identifier)
+    )
+      return identifier; // No quotes required for simple names
+    return `"${identifier}"`; // Double quotes for Postgres/MySQL
+  };
+
+  const getDefaultClause = (def) => {
+    if (def.default === undefined || def.default === null) return "";
+
+    let defaultVal = def.default;
+    if (typeof defaultVal === "string") {
+      // Escape single quotes for strings
+      defaultVal = defaultVal.replace(/'/g, "''");
+      return ` DEFAULT '${defaultVal}'`;
+    }
+    if (defaultVal === "CURRENT_TIMESTAMP") {
+      if (engine === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE)
+        return " DEFAULT CURRENT_TIMESTAMP";
+      return ` DEFAULT ${defaultVal}`; // Works for all
+    }
+    return ` DEFAULT ${defaultVal}`;
+  };
 
   const added = Object.keys(newModel.fields);
 
   for (const col of added) {
     const def = newModel.fields[col];
-    let columnSQLdef = `${col}`;
+    let columnSQLdef = getIdentifierQuote(col);
 
-    // 1️⃣ Map field type
-    columnSQLdef += " " + def.type;
+    // Map field type + auto-increment
+    let baseType = def.type.toUpperCase();
+    const autoInc = getAutoIncrement(col);
+    if (autoInc && engine === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES) {
+      columnSQLdef += ` ${autoInc}`; // SERIAL overrides INTEGER
+    } else {
+      columnSQLdef += ` ${baseType}${autoInc ? ` ${autoInc}` : ""}`;
+    }
 
-    // 2️⃣ Nullability
-    const nullable = def.nullable === true; // explicitly nullable
-    const notNull = !nullable; // default is NOT NULL
-
+    // Nullability
+    const nullable = def.nullable === true;
+    const notNull = !nullable;
     if (notNull) columnSQLdef += " NOT NULL";
 
-    if (def.primaryKey) pk.push(col);
-    if (def.autoIncrement) columnSQLdef += " AUTO_INCREMENT";
+    // Default value (after nullability)
+    columnSQLdef += getDefaultClause(def);
 
-    // 4️⃣ Default value
-    if (def.default !== undefined && def.default !== null) {
-      if (typeof def.default === "string") {
-        columnSQLdef += ` DEFAULT '${def.default}'`;
-      } else {
-        columnSQLdef += ` DEFAULT ${def.default}`;
-      }
-    }
+    // Collect PK
+    if (def.primaryKey) pk.push(getIdentifierQuote(col));
 
     columns.push(columnSQLdef);
   }
 
-  // 5️⃣ Handle primary key
+  // Handle primary key constraint
   if (pk.length) {
-    columns.push(`PRIMARY KEY (${pk.map((f) => `"${f}"`).join(", ")})`);
+    let pkClause;
+    if (engine === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
+      // SQLite: Inline PRIMARY KEY on column or table-level without quotes if simple
+      pkClause =
+        pk.length === 1 ? "PRIMARY KEY" : `PRIMARY KEY (${pk.join(", ")})`;
+    } else {
+      pkClause = `PRIMARY KEY (${pk.join(", ")})`;
+    }
+    columns.push(pkClause);
   }
 
-  // 6️⃣ Build table-level comment and index SQL
-  let tableSQL = `CREATE TABLE IF NOT EXISTS "${table}" (\n  ${columns.join(
+  // Build full CREATE TABLE
+  const quotedTable = getIdentifierQuote(table);
+  let tableSQL = `CREATE TABLE IF NOT EXISTS "${quotedTable}" (\n  ${columns.join(
     ",\n  "
   )}\n);`;
 
@@ -496,6 +560,7 @@ export function _generateCreateTableSQL(table, newModel, sql = []) {
 export async function diffSchemas(oldSchema, newSchema) {
   const sql = [];
   const warnings = [];
+  const deferredRelationSqlDiff = [];
 
   for (const [_, newModel] of Object.entries(newSchema)) {
     const table = newModel.meta?.tableName || newModel.name;
@@ -533,7 +598,8 @@ export async function diffSchemas(oldSchema, newSchema) {
       oldModel.relations,
       newModel.relations,
       newModelsObject,
-      sql
+      sql,
+      deferredRelationSqlDiff
     );
 
     // Handle triggers
@@ -553,6 +619,8 @@ export async function diffSchemas(oldSchema, newSchema) {
       }
     }
   }
+
+  sql.push([...deferredRelationSqlDiff]);
 
   return { sql, warnings };
 }

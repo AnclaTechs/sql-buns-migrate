@@ -1,18 +1,12 @@
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-global.require = require;
-
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-const { loadModels } = require("./utils/loadModels.js");
-const { diffSchemas } = require("./utils/schemaDiffConstructor.js");
+import fs from "fs";
+import path from "path";
+import { getAllRows } from "@anclatechs/sql-buns";
+import { generateChecksum } from "./utils/generics.js";
+import { loadModels } from "./utils/loadModels.js";
+import { diffSchemas } from "./utils/schemaDiffConstructor.js";
+import { inspectDBForDrift } from "./utils/integrity.js";
 const MIGRATIONS_DIR = path.join(process.cwd(), "migrations");
 const SNAPSHOT_FILE = path.join(MIGRATIONS_DIR, "schema_snapshot.json");
-
-function checksum(obj) {
-  return crypto.createHash("sha256").update(JSON.stringify(obj)).digest("hex");
-}
 
 function sanitizeMigrationName(name) {
   /**
@@ -37,23 +31,52 @@ function extractSchemas(modelsModule) {
 }
 
 export async function createMigration(name) {
-  if (!fs.existsSync(MIGRATIONS_DIR)) fs.mkdirSync(MIGRATIONS_DIR);
+  // CHECK DIRECTORY
+  if (!fs.existsSync(MIGRATIONS_DIR))
+    fs.mkdirSync(MIGRATIONS_DIR, { recursive: true });
+
+  // Read all migration files in the directory
+  const files = fs
+    .readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith(".sql"))
+    .sort();
+
+  // Fetch all migrations already applied to the database
+  const applied = await getAllRows(`SELECT name FROM  _sqlbuns_migrations`);
+  const appliedNames = new Set(applied.map((r) => r.name));
+
+  // Detect files yet to be applied
+  const unapplied = files.filter((f) => !appliedNames.has(f));
+
+  if (unapplied.length > 0) {
+    console.error(
+      `\n❌ Migration files not yet applied:\n${unapplied
+        .map((f) => "  - " + f)
+        .join("\n")}`
+    );
+    console.error(
+      "\n⚠️ Your local migration files are out of sync with the database.\nRun:  buns-migrate up  to apply them before creating a new one.\n"
+    );
+    process.exit(1);
+  }
 
   const models = await loadModels();
   const currentSchema = extractSchemas(models);
-  const currentChecksum = checksum(currentSchema);
+  const currentChecksum = generateChecksum(currentSchema);
 
   let oldSchema = {};
   if (fs.existsSync(SNAPSHOT_FILE)) {
     oldSchema = JSON.parse(fs.readFileSync(SNAPSHOT_FILE, "utf-8"));
   }
 
-  const oldChecksum = checksum(oldSchema);
+  const oldChecksum = generateChecksum(oldSchema);
 
   if (currentChecksum === oldChecksum) {
     console.log("✅ No schema changes detected.");
     return;
   }
+
+  await inspectDBForDrift(oldSchema, currentSchema);
 
   const changes = await diffSchemas(oldSchema, currentSchema);
 

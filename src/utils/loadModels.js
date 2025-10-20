@@ -1,6 +1,8 @@
-import path from "path";
 import fs from "fs";
+import { createRequire } from "module";
 import { resolveModelsPath } from "./resolveModelsPath.js";
+const require = createRequire(import.meta.url);
+global.require = require;
 
 /**
  * Dynamically loads the user's model definitions ensuring file exists

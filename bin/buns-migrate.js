@@ -3,6 +3,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { migrateUp, migrateDown, createMigration } from "../src/index.js";
 import { resolveModelsPath } from "../src/utils/resolveModelsPath.js";
+import { inspectdb } from "../src/utils/introspect.js";
 
 const program = new Command();
 
@@ -17,11 +18,20 @@ const program = new Command();
       .version("1.0.0");
 
     program
+      .command("insectdb")
+      .description("Introspects existing DB and writes models/index.js")
+      .action(async () => {
+        await inspectdb();
+        console.log(chalk.green(`✅ Completed successfully`));
+      });
+
+    program
       .command("create <name>")
       .description("Create a new migration file")
-      .action((name) => {
-        createMigration(name);
-        console.log(chalk.green(`✅ Created migration: ${name}`));
+      .action(async (name) => {
+        name = String(name).toLowerCase();
+        await createMigration(name);
+        console.log(chalk.green(`✅ Created migration: ${name} successfully`));
       });
 
     program

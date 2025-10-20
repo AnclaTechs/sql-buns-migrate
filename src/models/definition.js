@@ -1,3 +1,8 @@
+import {
+  SUPPORTED_SQL_DIALECTS,
+  SUPPORTED_SQL_DIALECTS_TYPES,
+} from "../utils/constants.js";
+
 function _normalizeOptions(options, defaults = {}) {
   /**
    * Ensures consistent ordering and managment of default values
@@ -74,7 +79,7 @@ export const TextField = (options = {}) => {
 };
 
 export const EnumField = (options = {}) => {
-  const supportedENUMDialects = ["mysql", "sqlite", "postgres"];
+  const supportedENUMDialects = SUPPORTED_SQL_DIALECTS;
 
   const { choices, default: def, typeName, ...rest } = options;
 
@@ -111,19 +116,18 @@ export const EnumField = (options = {}) => {
   let enumTypeName = null;
 
   switch (dialect.toLowerCase()) {
-    case "mysql":
+    case SUPPORTED_SQL_DIALECTS_TYPES.MYSQL:
       inlineType = `ENUM(${choices.map((c) => `'${c}'`).join(", ")})`;
       break;
 
-    case "sqlite":
+    case SUPPORTED_SQL_DIALECTS_TYPES.SQLITE:
       // SQLite doesn't support ENUM natively, so we simulate it with CHECK
       inlineType = `TEXT CHECK(${rest.name || "value"} IN (${choices
         .map((c) => `'${c}'`)
         .join(", ")}))`;
       break;
 
-    case "postgres":
-    case "postgresql":
+    case SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES:
       enumTypeName =
         typeName || `enum_${Math.random().toString(36).substring(2, 8)}`;
       inlineType = enumTypeName; // references a type to be created elsewhere
@@ -131,7 +135,9 @@ export const EnumField = (options = {}) => {
 
     default:
       throw new Error(
-        `Unsupported SQL dialect '${dialect}'. Use 'mysql', 'sqlite', or 'postgres'.`
+        `Unsupported SQL dialect '${dialect}'. Use ${SUPPORTED_SQL_DIALECTS.join(
+          ","
+        )}.`
       );
   }
 
