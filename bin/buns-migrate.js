@@ -31,7 +31,6 @@ const program = new Command();
       .action(async (name) => {
         name = String(name).toLowerCase();
         await createMigration(name);
-        console.log(chalk.green(`✅ Created migration: ${name} successfully`));
       });
 
     program

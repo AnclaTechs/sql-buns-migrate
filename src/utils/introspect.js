@@ -40,13 +40,10 @@ async function confirmOverwrite(filePath) {
   });
 
   return new Promise((resolve) => {
-    rl.question(
-      `⚠️  ${filePath} already exists. Overwrite? (y/N): `,
-      (answer) => {
-        rl.close();
-        resolve(answer.trim().toLowerCase() === "y");
-      }
-    );
+    rl.question(`${filePath} already exists. Overwrite? (y/N): `, (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase() === "y");
+    });
   });
 }
 
@@ -89,7 +86,7 @@ export async function inspectdb() {
     }
 
     if (tables.length === 0) {
-      console.log("⚠️ No tables found in this database.");
+      console.log("No tables found in this database.");
       return;
     }
 

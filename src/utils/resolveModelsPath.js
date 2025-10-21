@@ -65,7 +65,7 @@ export async function resolveModelsPath() {
     }
   } catch (err) {
     console.error(
-      "⚠️ Unable to initialize/connect to migration table:",
+      "Unable to initialize/connect to migration table:",
       err.message
     );
     throw err.message;

@@ -19,7 +19,7 @@ export async function inspectDBForDrift(oldSchema, newSchema) {
   }
 
   if (!lastMigration) {
-    console.warn("⚠️ No previous migrations found, skipping drift check.");
+    console.warn("No previous migrations found, skipping drift check.");
     return;
   }
 
@@ -29,7 +29,7 @@ export async function inspectDBForDrift(oldSchema, newSchema) {
   const localChecksum = generateChecksum(oldSchema);
 
   if (localChecksum !== checksum) {
-    console.error(chalk.red("\n⚠️ Schema drift detected!"));
+    console.error(chalk.red("\nSchema drift detected!"));
     console.error(
       chalk.red("Your database structure differs from the last known schema.")
     );

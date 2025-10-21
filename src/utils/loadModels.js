@@ -28,7 +28,7 @@ export async function loadModels() {
       typeof models !== "object" ||
       Object.keys(modelsModule).length === 0
     ) {
-      throw new Error(`⚠️ No exports found in models file: ${modelsPath}`);
+      throw new Error(`No exports found in models file: ${modelsPath}`);
     }
 
     console.log(`📦 Successfully loaded models from: ${modelsPath}`);

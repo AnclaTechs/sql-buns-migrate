@@ -30,10 +30,89 @@ function extractSchemas(modelsModule) {
   return schemas;
 }
 
+function normalizeSchemasForChecksum(oldSchema, currentSchema) {
+  let oldFiltered = JSON.parse(JSON.stringify(oldSchema));
+  let currentFiltered = JSON.parse(JSON.stringify(currentSchema));
+
+  // Get all model objects from both schemas
+  const oldModels = Object.values(oldFiltered);
+  const currentModels = Object.values(currentFiltered);
+
+  // Helper to generate a unique key for matching indexes (order-independent)
+  function getIndexKey(idx) {
+    if (!idx || !idx.fields) return null;
+    const fieldsStr = [...idx.fields].sort().join(",");
+    return `${fieldsStr}|${idx.unique ? "true" : "false"}`;
+  }
+
+  // Iterate over current models to find matches in old
+  currentModels.forEach((currentModel) => {
+    const currentTable = currentModel.meta?.tableName || currentModel.name;
+    if (!currentTable) return; // Skip if no table identifier
+
+    const matchingOldModel = oldModels.find((oldModel) => {
+      const oldTable = oldModel.meta?.tableName || oldModel.name;
+      return oldTable === currentTable;
+    });
+
+    if (!matchingOldModel) return; // No match, skip
+
+    // Now normalize indexes for this matched pair
+    const oldIndexes = matchingOldModel.meta?.indexes || [];
+    const currentIndexes = currentModel.meta?.indexes || [];
+
+    // Build a map of old indexes by key for quick lookup
+    const oldIndexMap = {};
+    oldIndexes.forEach((oldIdx) => {
+      const key = getIndexKey(oldIdx);
+      if (key) oldIndexMap[key] = oldIdx;
+    });
+
+    // For each current index, check for match in old and normalize if needed
+    currentIndexes.forEach((currentIdx) => {
+      const key = getIndexKey(currentIdx);
+      if (!key) return; // Skip invalid indexes
+
+      const matchingOldIdx = oldIndexMap[key];
+      if (!matchingOldIdx) return; // No match in old, leave as-is (new index)
+
+      // PS: Old always has 'name', so check if current lacks it
+      if (!currentIdx.hasOwnProperty("name")) {
+        // Delete from old to match lack in current
+        delete matchingOldIdx.name;
+      }
+      // Else: current has 'name' (possibly different value)—keep both as-is
+      // If values differ, checksum will detect the change
+    });
+  });
+
+  return { oldFiltered, currentFiltered };
+}
+
 export async function createMigration(name) {
   // CHECK DIRECTORY
   if (!fs.existsSync(MIGRATIONS_DIR))
     fs.mkdirSync(MIGRATIONS_DIR, { recursive: true });
+
+  const models = await loadModels();
+  const currentSchema = extractSchemas(models);
+
+  let oldSchema = {};
+  if (fs.existsSync(SNAPSHOT_FILE)) {
+    oldSchema = JSON.parse(fs.readFileSync(SNAPSHOT_FILE, "utf-8"));
+  }
+
+  const { oldFiltered, currentFiltered } = normalizeSchemasForChecksum(
+    oldSchema,
+    currentSchema
+  );
+  const currentChecksum = generateChecksum(currentFiltered);
+  const oldChecksum = generateChecksum(oldFiltered);
+
+  if (currentChecksum === oldChecksum) {
+    console.log("✅ No schema changes detected.");
+    return;
+  }
 
   // Read all migration files in the directory
   const files = fs
@@ -55,25 +134,9 @@ export async function createMigration(name) {
         .join("\n")}`
     );
     console.error(
-      "\n⚠️ Your local migration files are out of sync with the database.\nRun:  buns-migrate up  to apply them before creating a new one.\n"
+      "\nYour local migration files are out of sync with the database.\nRun: `buns-migrate up` to apply them before creating a new one.\n"
     );
     process.exit(1);
-  }
-
-  const models = await loadModels();
-  const currentSchema = extractSchemas(models);
-  const currentChecksum = generateChecksum(currentSchema);
-
-  let oldSchema = {};
-  if (fs.existsSync(SNAPSHOT_FILE)) {
-    oldSchema = JSON.parse(fs.readFileSync(SNAPSHOT_FILE, "utf-8"));
-  }
-
-  const oldChecksum = generateChecksum(oldSchema);
-
-  if (currentChecksum === oldChecksum) {
-    console.log("✅ No schema changes detected.");
-    return;
   }
 
   await inspectDBForDrift(oldSchema, currentSchema);
@@ -81,7 +144,7 @@ export async function createMigration(name) {
   const changes = await diffSchemas(oldSchema, currentSchema);
 
   if (changes.warnings.length > 0) {
-    console.log("⚠️ Warnings:");
+    console.log("Warnings:");
     changes.warnings.forEach((w) => console.log(" - " + w));
   }
 
@@ -93,12 +156,12 @@ export async function createMigration(name) {
 
   fs.writeFileSync(SNAPSHOT_FILE, JSON.stringify(currentSchema, null, 2));
 
-  console.log(`✅ Migration created: ${filename}`);
+  console.log(chalk.green(`✅ Migration created: ${filename}`));
 }
 
 export async function migrateUp() {
   console.log("Running migrations...");
-  // future: check and run all unapplied migrations
+  // check and run all unapplied migrations
 }
 
 export async function migrateDown() {
