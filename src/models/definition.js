@@ -28,23 +28,36 @@ function _createField(type, options = {}, defaults = {}) {
 }
 
 function _normalizeSQLForJSON(sql) {
-  let clean = sql.trim();
+  if (typeof sql === "string") {
+    let clean = sql.trim();
 
-  if (
-    (clean.startsWith("`") && clean.endsWith("`")) ||
-    (clean.startsWith('"') && clean.endsWith('"')) ||
-    (clean.startsWith("'") && clean.endsWith("'"))
-  ) {
-    clean = clean.slice(1, -1);
+    if (
+      (clean.startsWith("`") && clean.endsWith("`")) ||
+      (clean.startsWith('"') && clean.endsWith('"')) ||
+      (clean.startsWith("'") && clean.endsWith("'"))
+    ) {
+      clean = clean.slice(1, -1);
+    }
+
+    clean = clean.replace(/\s+/g, " ").trim();
+
+    clean = clean.replace(/"/g, "'");
+
+    clean = clean.replace(/;?\s*$/, ";");
+
+    return clean;
+  } else if (typeof sql === "object" && sql !== null) {
+    const cleaned = { ...sql };
+    if (typeof cleaned.body === "string") {
+      cleaned.body = _normalizeSQLForJSON(cleaned.body);
+    }
+    if (typeof cleaned.when === "string") {
+      cleaned.when = _normalizeSQLForJSON(cleaned.when);
+    }
+    return cleaned;
+  } else {
+    throw new Error("Unexpected SQL type");
   }
-
-  clean = clean.replace(/\s+/g, " ").trim();
-
-  clean = clean.replace(/"/g, "'");
-
-  clean = clean.replace(/;?\s*$/, ";");
-
-  return clean;
 }
 
 function _formatSQLArray(statements) {

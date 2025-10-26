@@ -9,20 +9,25 @@ export const UserModelTriggers = {
   ],
   AFTER_UPDATE: [
     /** Track level upgrades automatically */
-    `INSERT INTO user_level_history (
+    {
+      body: `INSERT INTO user_level_history (
             user_id, old_level, new_level, changed_at
         )
         VALUES (
             NEW.id, OLD.level, NEW.level, CURRENT_TIMESTAMP
         )
-        WHERE OLD.level <> NEW.level;`,
+        `,
+      when: "WHEN OLD.level <> NEW.level",
+    },
 
     /** Audit bonus changes */
-    `INSERT INTO audit_logs (message, created_at)
+    {
+      body: `INSERT INTO audit_logs (message, created_at)
         VALUES (
             'Bonus changed, from ' || OLD.bonus_balance || ' to ' || NEW.bonus_balance,
             CURRENT_TIMESTAMP
-        )
-        WHERE OLD.bonus_balance <> NEW.bonus_balance;`,
+        );`,
+      when: "WHEN OLD.bonus_balance <> NEW.bonus_balance",
+    },
   ],
 };

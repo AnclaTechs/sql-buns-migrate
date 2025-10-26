@@ -16,6 +16,21 @@ const Games = defineModel(
     },
   }
 );
+
+const AuditLogs = defineModel("audit_logs", {
+  id: { type: Fields.IntegerField, primaryKey: true, autoIncrement: true },
+  message: { type: Fields.CharField },
+  created_at: { type: Fields.DateTimeField },
+});
+
+const UserLevelHistory = defineModel("user_level_history", {
+  id: { type: Fields.IntegerField, primaryKey: true, autoIncrement: true },
+  user_id: { type: Fields.IntegerField },
+  old_level: { type: Fields.CharField },
+  new_level: { type: Fields.CharField },
+  changed_at: { type: Fields.DateTimeField },
+});
+
 const Users = defineModel(
   "users",
   {
@@ -85,4 +100,6 @@ const Users = defineModel(
 module.exports = {
   Users,
   Games,
+  AuditLogs,
+  UserLevelHistory,
 };

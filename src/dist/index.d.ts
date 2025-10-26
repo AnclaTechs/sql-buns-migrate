@@ -186,24 +186,24 @@ declare module "@anclatechs/sql-buns-migrate" {
    * Each trigger can run one or more SQL statements automatically.
    */
   export interface ModelTriggers {
-    /** Runs before inserting a new record (e.g., set timestamps, validate data). */
-    beforeInsert?: string[];
+  /** Runs before inserting a new record (e.g., set timestamps, validate data). */
+  beforeInsert?: Array<string | { body: string; when?: string }>;
 
-    /** Runs after a record is inserted (e.g., log or sync changes). */
-    afterInsert?: string[];
+  /** Runs after a record is inserted (e.g., log or sync changes). */
+  afterInsert?: Array<string | { body: string; when?: string }>;
 
-    /** Runs before updating an existing record (e.g., modify values, audit). */
-    beforeUpdate?: string[];
+  /** Runs before updating an existing record (e.g., modify values, audit). */
+  beforeUpdate?: Array<string | { body: string; when?: string }>;
 
-    /** Runs after a record is updated (e.g., trigger another table update). */
-    afterUpdate?: string[];
+  /** Runs after a record is updated (e.g., trigger another table update). */
+  afterUpdate?: Array<string | { body: string; when?: string }>;
 
-    /** Runs before deleting a record (e.g., check constraints, archive data). */
-    beforeDelete?: string[];
+  /** Runs before deleting a record (e.g., check constraints, archive data). */
+  beforeDelete?: Array<string | { body: string; when?: string }>;
 
-    /** Runs after a record is deleted (e.g., cleanup related data, log actions). */
-    afterDelete?: string[];
-  }
+  /** Runs after a record is deleted (e.g., cleanup related data, log actions). */
+  afterDelete?: Array<string | { body: string; when?: string }>;
+}
 
   /**
    * Possible JS primitive types accepted for assertParams validation

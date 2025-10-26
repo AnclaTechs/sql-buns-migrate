@@ -38,7 +38,6 @@ const program = new Command();
       .description("Run all pending migrations")
       .action(async () => {
         await migrateUp();
-        console.log(chalk.blue("🚀 Migrations applied successfully"));
       });
 
     program

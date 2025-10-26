@@ -69,8 +69,14 @@
         "timing": "AFTER",
         "event": "UPDATE",
         "statements": [
-          "INSERT INTO user_level_history ( user_id, old_level, new_level, changed_at ) VALUES ( NEW.id, OLD.level, NEW.level, CURRENT_TIMESTAMP ) WHERE OLD.level <> NEW.level;",
-          "INSERT INTO audit_logs (message, created_at) VALUES ( 'Bonus changed, from ' || OLD.bonus_balance || ' to ' || NEW.bonus_balance, CURRENT_TIMESTAMP ) WHERE OLD.bonus_balance <> NEW.bonus_balance;"
+          {
+            "body": "INSERT INTO user_level_history ( user_id, old_level, new_level, changed_at ) VALUES ( NEW.id, OLD.level, NEW.level, CURRENT_TIMESTAMP );",
+            "when": "WHEN OLD.level <> NEW.level;"
+          },
+          {
+            "body": "INSERT INTO audit_logs (message, created_at) VALUES ( 'Bonus changed, from ' || OLD.bonus_balance || ' to ' || NEW.bonus_balance, CURRENT_TIMESTAMP );",
+            "when": "WHEN OLD.bonus_balance <> NEW.bonus_balance;"
+          }
         ]
       }
     },
@@ -110,5 +116,56 @@
     "meta": {
       "tableName": "games"
     }
+  },
+  "AuditLogs": {
+    "name": "audit_logs",
+    "fields": {
+      "id": {
+        "type": "INTEGER",
+        "autoIncrement": true,
+        "primaryKey": true
+      },
+      "message": {
+        "type": "VARCHAR",
+        "maxLength": 255
+      },
+      "created_at": {
+        "type": "DATETIME",
+        "default": "CURRENT_TIMESTAMP"
+      }
+    },
+    "relations": {},
+    "triggers": {},
+    "meta": {}
+  },
+  "UserLevelHistory": {
+    "name": "user_level_history",
+    "fields": {
+      "id": {
+        "type": "INTEGER",
+        "autoIncrement": true,
+        "primaryKey": true
+      },
+      "user_id": {
+        "type": "INTEGER",
+        "autoIncrement": false,
+        "primaryKey": false
+      },
+      "old_level": {
+        "type": "VARCHAR",
+        "maxLength": 255
+      },
+      "new_level": {
+        "type": "VARCHAR",
+        "maxLength": 255
+      },
+      "changed_at": {
+        "type": "DATETIME",
+        "default": "CURRENT_TIMESTAMP"
+      }
+    },
+    "relations": {},
+    "triggers": {},
+    "meta": {}
   }
 }

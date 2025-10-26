@@ -2,7 +2,7 @@ import { getSingleRow } from "@anclatechs/sql-buns";
 import chalk from "chalk";
 import readline from "readline";
 import { SUPPORTED_SQL_DIALECTS_TYPES } from "./constants.js";
-
+const dbType = process.env.DATABASE_ENGINE;
 async function _tableExistsInDb(table) {
   try {
     await getSingleRow(`SELECT 1 FROM ${table} LIMIT 1`);
@@ -19,6 +19,173 @@ async function _columnExistsInDb(table, column) {
   } catch {
     return false;
   }
+}
+
+/**
+ *
+ * Validates trigger body for referenced tables/columns; It's similar to `decideRelationAction` function below,
+ * but tailored for trigger statements. Throws on parse failure or invalid refs
+ * Returns { action: "createNow" | "defer" } on success, or { action: "error", error: Error }
+ */
+async function _validateTriggerBody(body, allNewModels) {
+  const upperBody = body.toUpperCase().trim();
+  let targetTables = [],
+    targetColumns = [];
+
+  // Parse from body
+  if (upperBody.startsWith("INSERT INTO")) {
+    const tableMatch = body.match(/INSERT\s+INTO\s+["`']?(\w+)["`']?/i);
+    if (!tableMatch) {
+      console.error(
+        chalk.red(
+          `Could not parse target table from INSERT statement in trigger body \n${body}`
+        )
+      );
+      process.exit();
+    }
+    targetTables.push(tableMatch[1].toLowerCase());
+
+    // Columns from (col1, col2)
+    const colMatch = body.match(/\(\s*([^)]+)\s*\)/);
+    if (colMatch) {
+      targetColumns = colMatch[1]
+        .split(",")
+        .map((col) =>
+          col
+            .trim()
+            .replace(/^["`']|["`']$/g, "")
+            .toLowerCase()
+        )
+        .filter(Boolean);
+    }
+  } else if (upperBody.startsWith("UPDATE")) {
+    const tableMatch = body.match(/UPDATE\s+["`']?(\w+)["`']?/i);
+    if (!tableMatch) {
+      console.error(
+        chalk.red(
+          `Could not parse target table from UPDATE statement in trigger body \n${body}`
+        )
+      );
+      process.exit();
+    }
+    targetTables.push(tableMatch[1].toLowerCase());
+
+    // Columns from SET
+    const setMatch = body.match(/SET\s+([^;]+)/i);
+    if (setMatch) {
+      const setClause = setMatch[1];
+      targetColumns = setClause
+        .split(",")
+        .map((part) => {
+          const colPart = part.trim().split("=")[0].trim();
+          return colPart.replace(/^["`']|["`']$/g, "").toLowerCase();
+        })
+        .filter(Boolean);
+    }
+  } else if (upperBody.startsWith("DELETE FROM")) {
+    const tableMatch = body.match(/DELETE\s+FROM\s+["`']?(\w+)["`']?/i);
+    if (!tableMatch) {
+      console.error(
+        chalk.red(
+          `Could not parse target table from DELETE statement in trigger body \n${body}`
+        )
+      );
+      process.exit();
+    }
+    targetTables.push(tableMatch[1].toLowerCase());
+  } else if (upperBody.startsWith("SELECT")) {
+    // Basic SELECT: Grab FROM table (first one; extend for JOINs if needed)
+    const fromMatch = body.match(/FROM\s+["`']?(\w+)["`']?/i);
+    if (!fromMatch)
+      throw new Error(
+        "Could not parse target table from SELECT statement in trigger body"
+      );
+    targetTables.push(fromMatch[1].toLowerCase());
+
+    // Columns: From SELECT col1, col2 or * (skip if *)
+    if (!upperBody.includes("SELECT *")) {
+      const selectMatch = body.match(/SELECT\s+([^;]+)/i);
+      if (selectMatch) {
+        const selectClause = selectMatch[1].split("FROM")[0].trim(); // Up to FROM
+        targetColumns = selectClause
+          .split(",")
+          .map((col) =>
+            col
+              .trim()
+              .replace(/^["`']|["`']$/g, "")
+              .toLowerCase()
+          )
+          .filter(Boolean);
+      }
+    }
+
+    // Warn on subqueries/JOINs (basic check)
+    if (body.includes("JOIN") || body.match(/SELECT.*SELECT/i)) {
+      console.warn(
+        "Complex SELECT (JOIN/subquery) detected—manual validation recommended for all referenced tables."
+      );
+    }
+  } else {
+    // Non-DML (e.g., RETURN, IF without DML): assume safe
+    return { action: "createNow" };
+  }
+
+  // Validate each derived targetTable (and its columns)
+  for (const targetTable of targetTables) {
+    const tableExists = await _tableExistsInDb(targetTable);
+
+    const tablesInBatch = allNewModels.reduce((acc, [_, model]) => {
+      const table = model.meta?.tableName || model.name;
+      acc[table.toLowerCase()] = model;
+      return acc;
+    }, {});
+
+    const targetInBatch = !!tablesInBatch[targetTable];
+    const targetModel = targetInBatch ? tablesInBatch[targetTable] : null;
+
+    if (tableExists) {
+      // Existing: validate columns
+      for (const col of targetColumns) {
+        const colExists = await _columnExistsInDb(targetTable, col);
+        if (!colExists) {
+          return {
+            action: "error",
+            error: new Error(
+              `Trigger references non-existent column "${col}" in existing table "${targetTable}".`
+            ),
+          };
+        }
+      }
+    } else if (targetInBatch) {
+      // In batch: validate model fields
+      for (const col of targetColumns) {
+        const definesField = !!(targetModel.fields || {})[col];
+        if (!definesField) {
+          return {
+            action: "error",
+            error: new Error(
+              `Trigger references column "${col}" in batch table "${targetTable}", but model does not define this field.`
+            ),
+          };
+        }
+      }
+    } else {
+      // Missing entirely
+      return {
+        action: "error",
+        error: new Error(
+          `Trigger references table "${targetTable}" which does not exist in DB and is not part of the current migration batch.`
+        ),
+      };
+    }
+
+    // Per-table action: Use "defer" if *any* target needs it
+    if (targetInBatch && !tableExists) {
+      return { action: "defer" }; // Defer whole trigger if any dep in batch
+    }
+  }
+
+  return { action: "createNow" };
 }
 
 function _handleMetaDiff(table, oldMeta = {}, newMeta = {}, sql = []) {
@@ -96,7 +263,8 @@ export async function _handleRelationsDiff(
   newRelations = {},
   allNewModels = {},
   sql = [],
-  deferedSql = []
+  deferedSql = [],
+  pendingFKConstraints = []
 ) {
   const pendingRelations = [];
 
@@ -151,13 +319,8 @@ export async function _handleRelationsDiff(
   };
 
   // Inline: SQL generation logic (extracted for reuse in both loops)
-  const createRelationSql = (rel, baseTable) => {
-    if (rel.type === "hasOne" || rel.type === "hasMany") {
-      return [
-        `ALTER TABLE ${rel.model} ADD CONSTRAINT fk_${rel.model}_${rel.foreignKey} FOREIGN KEY (${rel.foreignKey}) REFERENCES ${baseTable}(id);`,
-        `CREATE INDEX IF NOT EXISTS idx_${rel.model}_${rel.foreignKey} ON ${rel.model} (${rel.foreignKey});`,
-      ];
-    } else if (rel.type === "manyToMany") {
+  const createRelationSql = async (rel, baseTable) => {
+    if (rel.type === "manyToMany") {
       return [
         `CREATE TABLE IF NOT EXISTS ${rel.through} (
           ${rel.foreignKey} INTEGER REFERENCES ${baseTable}(id),
@@ -165,6 +328,47 @@ export async function _handleRelationsDiff(
           PRIMARY KEY (${rel.foreignKey}, ${rel.otherKey})
         );`,
       ];
+    } else if (rel.type === "hasOne" || rel.type === "hasMany") {
+      const tableExists = await _tableExistsInDb(rel.model);
+      if (tableExists) {
+        if (dbType == SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
+          // THROW ERROR due to SQLite limitation
+          process.exit();
+        } else {
+          return [
+            `ALTER TABLE ${rel.model} ADD CONSTRAINT fk_${rel.model}_${rel.foreignKey} FOREIGN KEY (${rel.foreignKey}) REFERENCES ${baseTable}(id);`,
+            `CREATE INDEX IF NOT EXISTS idx_${rel.model}_${rel.foreignKey} ON ${rel.model} (${rel.foreignKey});`,
+          ];
+        }
+      } else {
+        // Table doesn't exist yet, Check newModelsObject
+        const tablesInBatch = allNewModels.reduce(
+          (resultantAccumulatingArray, [_, model]) => {
+            const table = model.meta?.tableName || model.name;
+            resultantAccumulatingArray[table] = model;
+            return resultantAccumulatingArray;
+          },
+          {}
+        );
+
+        const foreignTable = rel.model;
+        const foreignKey = rel.foreignKey;
+        const targetInBatch = !!tablesInBatch[foreignTable];
+        const targetDefinesField =
+          targetInBatch &&
+          !!(tablesInBatch[foreignTable].fields || {})[foreignKey];
+
+        if (targetInBatch && targetDefinesField) {
+          pendingFKConstraints.push({
+            model: rel.model,
+            foreignKey: rel.foreignKey,
+            baseTable,
+          });
+        } else {
+          // UNABLE TO RECONCILE
+        }
+        return [];
+      }
     }
     return [];
   };
@@ -190,7 +394,7 @@ export async function _handleRelationsDiff(
     }
 
     if (action === "createNow") {
-      const relSql = createRelationSql(rel, table);
+      const relSql = await createRelationSql(rel, table);
       sql.push(...relSql);
     }
   }
@@ -210,12 +414,12 @@ export async function _handleRelationsDiff(
         case "defer":
           // IF AT THIS STAGE NO ERROR IS Received, table is most likely in batch and should be included
           // Create the now-valid relation but defer the sql.push
-          var relSql = createRelationSql(rel, base);
+          var relSql = await createRelationSql(rel, base);
           deferedSql.push(...relSql);
           break;
         case "createNow":
           // Create the now-valid relation
-          var relSql = createRelationSql(rel, base);
+          var relSql = await createRelationSql(rel, base);
           sql.push(...relSql);
           break;
         default:
@@ -374,8 +578,9 @@ async function _handleFieldDiff(
   return { sql, warnings, renames };
 }
 
-function _handleTriggersDiff(
+async function _handleTriggersDiff(
   table,
+  allNewModels = {},
   oldTriggers = {},
   newTriggers = {},
   sql = []
@@ -410,7 +615,28 @@ function _handleTriggersDiff(
     if (!newMap[oldTrig.baseName]) {
       for (let si = 0; si < oldTrig.statements.length; si++) {
         const dropName = `${oldTrig.baseName}_${si}`;
-        sql.push(`DROP TRIGGER IF EXISTS ${dropName} ON ${table};`);
+        const funcName = `${dropName}_func`; // Tied to trigger name
+        let dropSql = [];
+
+        switch (dbType) {
+          case SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES:
+            // Optional flag for full cleanup
+            dropSql.push(`DROP FUNCTION IF EXISTS ${funcName}();`);
+
+            dropSql.push(`DROP TRIGGER IF EXISTS ${dropName} ON ${table};`);
+            break;
+          case SUPPORTED_SQL_DIALECTS_TYPES.MYSQL:
+          case SUPPORTED_SQL_DIALECTS_TYPES.SQLITE:
+            dropSql.push(`DROP TRIGGER IF EXISTS ${dropName};`);
+            break;
+          default:
+            console.warn(
+              `Unsupported dbType: ${dbType}; using generic syntax.`
+            );
+            dropSql.push(`DROP TRIGGER IF EXISTS ${dropName};`);
+        }
+        // Push all drops for this trigger (function first if applicable)
+        dropSql.forEach((ds) => sql.push(ds));
       }
     }
   }
@@ -418,53 +644,131 @@ function _handleTriggersDiff(
   // 2) For every new trigger (in order), compare to old:
   //    - If exact same (same number & text of statements and same order), do nothing.
   //    - Otherwise drop existing (if any) and recreate each statement trigger
-  newList.forEach((newTrig) => {
-    const oldTrig = oldMap[newTrig.baseName];
+  await Promise.all(
+    newList.map(async (newTrig) => {
+      const oldTrig = oldMap[newTrig.baseName];
 
-    const sameStatements =
-      oldTrig &&
-      oldTrig.statements.length === newTrig.statements.length &&
-      oldTrig.statements.every((s, i) => s === newTrig.statements[i]);
+      const sameStatements =
+        oldTrig &&
+        oldTrig.statements.length === newTrig.statements.length &&
+        oldTrig.statements.every((oldS, i) => {
+          const newS = newTrig.statements[i];
+          const newBody = typeof newS === "string" ? newS : newS.body;
+          return oldS === newBody;
+        });
 
-    // If oldTrig exists and statements are identical and the baseName includes the same order,
-    // we consider it unchanged and keep it (so order is respected).
-    if (oldTrig && sameStatements) {
-      // unchanged — do nothing
-      return;
-    }
-
-    // Otherwise drop any existing triggers with the same baseName (if present)
-    // Note: dropping by exact per-statement name keeps it safe and precise.
-    if (oldTrig) {
-      for (let si = 0; si < oldTrig.statements.length; si++) {
-        const dropName = `${oldTrig.baseName}_${si}`;
-        sql.push(`DROP TRIGGER IF EXISTS ${dropName} ON ${table};`);
+      // If oldTrig exists and statements are identical and the baseName includes the same order,
+      // we consider it unchanged and keep it (so order is respected).
+      if (oldTrig && sameStatements) {
+        // unchanged — do nothing
+        return;
       }
-    } else {
-      // If there was no oldTrig with same baseName there might still exist triggers
-      // with a different baseName pattern for the same event/timing. We do not
-      // auto-drop those here because we only drop triggers we know are obsolete.
-      // (Optional: you may scan oldList for same event/timing but different order and drop them.)
-    }
 
-    // Recreate new statements as per-statement triggers named baseName_<idx>
-    newTrig.statements.forEach((statement, idx) => {
-      const createName = `${newTrig.baseName}_${idx}`;
-      // Use the preserved timing & event for the CREATE statement.
-      // Trim and normalize spacing to keep SQL tidy.
-      const timing = newTrig.timing;
-      const event = newTrig.event;
+      // Otherwise drop any existing triggers with the same baseName (if present)
+      // Note: dropping by exact per-statement name keeps it safe and precise.
+      if (oldTrig) {
+        for (let si = 0; si < oldTrig.statements.length; si++) {
+          const dropName = `${oldTrig.baseName}_${si}`;
+          const funcName = `${dropName}_func`; // Tied to trigger name
+          let dropSql = [];
 
-      sql.push(
-        `CREATE TRIGGER ${createName}\n  ${timing} ${event}\n  ON ${table}\n  FOR EACH ROW\n  EXECUTE FUNCTION ${statement};`
+          switch (dbType) {
+            case SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES:
+              // Optional flag for full cleanup
+              dropSql.push(`DROP FUNCTION IF EXISTS ${funcName}();`);
+
+              dropSql.push(`DROP TRIGGER IF EXISTS ${dropName} ON ${table};`);
+              break;
+            case SUPPORTED_SQL_DIALECTS_TYPES.MYSQL:
+            case SUPPORTED_SQL_DIALECTS_TYPES.SQLITE:
+              dropSql.push(`DROP TRIGGER IF EXISTS ${dropName};`);
+              break;
+            default:
+              console.warn(
+                `Unsupported dbType: ${dbType}; using generic syntax.`
+              );
+              dropSql.push(`DROP TRIGGER IF EXISTS ${dropName};`);
+          }
+          // Push all drops for this trigger (function first if applicable)
+          dropSql.forEach((ds) => sql.push(ds));
+        }
+      } else {
+        // If there was no oldTrig with same baseName there might still exist triggers
+        // with a different baseName pattern for the same event/timing. We do not
+        // auto-drop those here because we only drop triggers we know are obsolete.
+      }
+
+      // Recreate new statements as per-statement triggers named baseName_<idx>
+      await Promise.all(
+        newTrig.statements.map(async (statement, idx) => {
+          const createName = `${newTrig.baseName}_${idx}`;
+          const funcName = `${createName}_func`;
+          const timing = newTrig.timing;
+          const event = newTrig.event;
+          let body, when;
+          if (typeof statement === "string") {
+            body = statement.replace(/;+$/g, "").trim();
+          } else {
+            body = statement.body.replace(/;+$/g, "").trim();
+            when = statement.when;
+            // Regex to remove 'WHEN' keyword if present to prevent double (WHEN WHEN)
+            if (when) {
+              when = when
+                .replace(/\bWHEN\b\s*/i, "")
+                .replace(";", "")
+                .trim();
+            }
+          }
+
+          const validation = await _validateTriggerBody(body, allNewModels);
+          if (validation.action === "error") {
+            console.error(chalk.red(`${validation.error}`));
+            process.exit();
+          }
+
+          const returnClause =
+            event === "DELETE" ? "RETURN OLD;" : "RETURN NEW;";
+
+          const whenClause = when ? `\n  WHEN (${when})` : "";
+
+          let triggerSql;
+          switch (process.env.DATABASE_ENGINE) {
+            case SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES:
+              sql.push(
+                `CREATE OR REPLACE FUNCTION ${funcName}() RETURNS trigger AS $$\n` +
+                  `BEGIN\n` +
+                  `  ${body};\n` +
+                  `  ${returnClause}\n` +
+                  `END;\n` +
+                  `$$ LANGUAGE plpgsql;`
+              );
+              triggerSql = `CREATE TRIGGER ${createName}\n  ${timing} ${event}\n  ON ${table}\n  FOR EACH ROW${whenClause}\n  EXECUTE FUNCTION ${funcName}();`;
+              break;
+
+            case SUPPORTED_SQL_DIALECTS_TYPES.MYSQL:
+            case SUPPORTED_SQL_DIALECTS_TYPES.SQLITE:
+              triggerSql = `CREATE TRIGGER ${createName}\n  ${timing} ${event}\n  ON ${table}\n  FOR EACH ROW${whenClause}\n  BEGIN\n    ${body};\n  END;`;
+              break;
+
+            default:
+              triggerSql = `CREATE TRIGGER ${createName}\n  ${timing} ${event}\n  ON ${table}\n  FOR EACH ROW${whenClause}\n  EXECUTE FUNCTION ${body};`;
+          }
+
+          sql.push(triggerSql);
+        })
       );
-    });
-  });
+    })
+  );
 
   return sql;
 }
 
-export function _generateCreateTableSQL(table, newModel, sql = []) {
+export function _generateCreateTableSQL(
+  table,
+  newModel,
+  sql = [],
+  pendingFKConstraints = []
+) {
   const engine = process.env.DATABASE_ENGINE;
   const columns = [];
   const pk = [];
@@ -505,18 +809,32 @@ export function _generateCreateTableSQL(table, newModel, sql = []) {
   };
 
   const added = Object.keys(newModel.fields);
+  let hasAutoIncInPk = false;
 
   for (const col of added) {
     const def = newModel.fields[col];
     let columnSQLdef = getIdentifierQuote(col);
 
-    // Map field type + auto-increment
     let baseType = def.type.toUpperCase();
-    const autoInc = getAutoIncrement(col);
+    if (engine === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
+      // Check for enum-like pattern: TEXT CHECK(VALUE IN (...))
+      if (baseType.includes("TEXT CHECK(VALUE IN")) {
+        const regex = /TEXT\s+CHECK\s*\(\s*VALUE\s+IN\s*\(/i;
+        baseType = def.type.replace(
+          regex,
+          `TEXT CHECK(${getIdentifierQuote(col)} IN (`
+        );
+      }
+    }
+    const autoInc = getAutoIncrement(def);
     if (autoInc && engine === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES) {
-      columnSQLdef += ` ${autoInc}`; // SERIAL overrides INTEGER
+      columnSQLdef += ` ${autoInc}`; // example herein: SERIAL overrides INTEGER
     } else {
       columnSQLdef += ` ${baseType}${autoInc ? ` ${autoInc}` : ""}`;
+    }
+
+    if (def.unique) {
+      columnSQLdef += " UNIQUE";
     }
 
     // Nullability
@@ -524,27 +842,98 @@ export function _generateCreateTableSQL(table, newModel, sql = []) {
     const notNull = !nullable;
     if (notNull) columnSQLdef += " NOT NULL";
 
-    // Default value (after nullability)
+    // Default value
     columnSQLdef += getDefaultClause(def);
 
-    // Collect PK
-    if (def.primaryKey) pk.push(getIdentifierQuote(col));
+    // Collect PK (unquoted col for lookup)
+    if (def.primaryKey) {
+      const quotedCol = getIdentifierQuote(col);
+      pk.push(col); // Unquoted for def lookup
+      // Flag if this PK has auto-inc
+      if (autoInc) hasAutoIncInPk = true;
+    }
 
     columns.push(columnSQLdef);
   }
 
-  // Handle primary key constraint
-  if (pk.length) {
-    let pkClause;
-    if (engine === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
-      // SQLite: Inline PRIMARY KEY on column or table-level without quotes if simple
-      pkClause =
-        pk.length === 1 ? "PRIMARY KEY" : `PRIMARY KEY (${pk.join(", ")})`;
-    } else {
-      pkClause = `PRIMARY KEY (${pk.join(", ")})`;
-    }
-    columns.push(pkClause);
+  // Post-loop: Validate composite && Auto-Increment
+  const pkQuoted = pk.map((col) => getIdentifierQuote(col));
+  if (pkQuoted.length > 1 && hasAutoIncInPk) {
+    console.error(
+      chalk.red(
+        `[${pkQuoted.join(
+          ", "
+        )}] in '${table}' table forms a composite PK. Auto-increment is invalid for composites (SQL-Engine: ${engine}).`
+      )
+    );
+    process.exit(1);
   }
+
+  // Handle primary key constraint
+  if (pkQuoted.length > 0) {
+    let pkClause;
+    if (pkQuoted.length === 1) {
+      // Single PK: Inline with auto-increment where possible
+      switch (engine) {
+        case SUPPORTED_SQL_DIALECTS_TYPES.SQLITE:
+          for (let i = 0; i < columns.length; i++) {
+            if (
+              columns[i].includes(pkQuoted[0]) &&
+              columns[i].includes("AUTOINCREMENT")
+            ) {
+              columns[i] = columns[i].replace(
+                "AUTOINCREMENT",
+                "PRIMARY KEY AUTOINCREMENT"
+              );
+              break;
+            }
+          }
+          break;
+        case SUPPORTED_SQL_DIALECTS_TYPES.MYSQL:
+          for (let i = 0; i < columns.length; i++) {
+            if (
+              columns[i].includes(pkQuoted[0]) &&
+              columns[i].includes("AUTO_INCREMENT")
+            ) {
+              columns[i] = columns[i].replace(
+                "AUTO_INCREMENT",
+                "AUTO_INCREMENT PRIMARY KEY"
+              );
+              break;
+            }
+          }
+          break;
+        case SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES:
+          // Optional: Inline PRIMARY KEY on SERIAL col
+          for (let i = 0; i < columns.length; i++) {
+            if (
+              columns[i].includes(pkQuoted[0]) &&
+              columns[i].includes("SERIAL")
+            ) {
+              columns[i] = columns[i].replace("SERIAL", "SERIAL PRIMARY KEY");
+              break;
+            }
+          }
+        default:
+          pkClause = `PRIMARY KEY (${pkQuoted.join(", ")})`;
+          columns.push(pkClause);
+      }
+    } else {
+      // Composite:
+      pkClause = `PRIMARY KEY (${pkQuoted.join(", ")})`;
+      columns.push(pkClause);
+    }
+  }
+
+  // Check pendingFKConstraints
+  pendingFKConstraints.map((record) => {
+    const table = newModel.meta?.tableName || newModel.name;
+    if (record.model == table) {
+      columns.push(
+        `FOREIGN KEY (${record.foreignKey}) REFERENCES ${record.baseTable}(id)`
+      );
+    }
+  });
 
   // Build full CREATE TABLE
   const quotedTable = getIdentifierQuote(table);
@@ -561,6 +950,7 @@ export async function diffSchemas(oldSchema, newSchema) {
   const sql = [];
   const warnings = [];
   const deferredRelationSqlDiff = [];
+  const pendingFKConstraints = [];
 
   for (const [_, newModel] of Object.entries(newSchema)) {
     const table = newModel.meta?.tableName || newModel.name;
@@ -574,7 +964,7 @@ export async function diffSchemas(oldSchema, newSchema) {
     // If table doesn’t exist in old schema, create it
     if (Object.entries(oldModel).length == 0) {
       tableIsNew = true;
-      _generateCreateTableSQL(table, newModel, sql);
+      _generateCreateTableSQL(table, newModel, sql, pendingFKConstraints);
     }
 
     // Handle meta-level changes (table rename, comment, indexes)
@@ -599,11 +989,18 @@ export async function diffSchemas(oldSchema, newSchema) {
       newModel.relations,
       newModelsObject,
       sql,
-      deferredRelationSqlDiff
+      deferredRelationSqlDiff,
+      pendingFKConstraints
     );
 
     // Handle triggers
-    _handleTriggersDiff(table, oldModel.triggers, newModel.triggers, sql);
+    await _handleTriggersDiff(
+      table,
+      newModelsObject,
+      oldModel.triggers,
+      newModel.triggers,
+      sql
+    );
 
     // Handle dropped tables
     for (const [_, oldModel] of Object.entries(oldSchema)) {
@@ -620,7 +1017,7 @@ export async function diffSchemas(oldSchema, newSchema) {
     }
   }
 
-  sql.push([...deferredRelationSqlDiff]);
+  sql.push(...deferredRelationSqlDiff);
 
   return { sql, warnings };
 }

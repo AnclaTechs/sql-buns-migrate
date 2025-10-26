@@ -1,10 +1,12 @@
 import fs from "fs";
 import path from "path";
-import { getAllRows } from "@anclatechs/sql-buns";
+import chalk from "chalk";
+import { getAllRows, pool } from "@anclatechs/sql-buns";
 import { generateChecksum } from "./utils/generics.js";
 import { loadModels } from "./utils/loadModels.js";
 import { diffSchemas } from "./utils/schemaDiffConstructor.js";
 import { inspectDBForDrift } from "./utils/integrity.js";
+import { SUPPORTED_SQL_DIALECTS_TYPES } from "./utils/constants.js";
 const MIGRATIONS_DIR = path.join(process.cwd(), "migrations");
 const SNAPSHOT_FILE = path.join(MIGRATIONS_DIR, "schema_snapshot.json");
 
@@ -20,14 +22,95 @@ function sanitizeMigrationName(name) {
     .replace(/^_+|_+$/g, "");
 }
 
-function extractSchemas(modelsModule) {
-  const schemas = {};
+function schemaTopologicalSort(graph) {
+  const visited = new Set();
+  const temp = new Set();
+  const result = [];
+  const stack = [];
 
-  for (const [name, model] of Object.entries(modelsModule)) {
-    schemas[name] = model.toJSON();
+  function visit(node) {
+    if (temp.has(node)) {
+      const cycleStart = stack.indexOf(node);
+      const cyclePath =
+        cycleStart >= 0
+          ? stack.slice(cycleStart).concat(node)
+          : [...stack, node];
+      throw new Error(`Cyclic dependency detected: ${cyclePath.join(" -> ")}`);
+    }
+
+    if (!visited.has(node)) {
+      temp.add(node);
+      stack.push(node);
+
+      for (const dep of graph[node] || []) {
+        if (!graph[dep]) graph[dep] = new Set(); // include unknown refs
+        visit(dep);
+      }
+
+      stack.pop();
+      temp.delete(node);
+      visited.add(node);
+      result.push(node);
+    }
   }
 
-  return schemas;
+  // This ensures isolated nodes are visited
+  for (const node of Object.keys(graph)) {
+    if (!visited.has(node)) visit(node);
+  }
+
+  return result;
+}
+
+function extractSchemas(modelsModule) {
+  const schemas = {};
+  const dependencyGraph = {};
+
+  for (const [name, model] of Object.entries(modelsModule)) {
+    const schema = model.toJSON();
+    schemas[name] = schema;
+    if (!dependencyGraph[name]) {
+      dependencyGraph[name] = new Set();
+    }
+
+    if (schema.relations) {
+      for (const rel of Object.values(schema.relations)) {
+        if (rel.model && rel.model !== name) {
+          const match = Object.entries(modelsModule).reduce(
+            (acc, [key, model]) => {
+              if (acc === null && model.name === rel.model) {
+                return key;
+              }
+              return acc;
+            },
+            null
+          );
+
+          if (match !== null) {
+            try {
+              dependencyGraph[match].add(name);
+            } catch (err) {
+              if (err instanceof TypeError && !dependencyGraph[match]) {
+                dependencyGraph[match] = new Set();
+                dependencyGraph[match].add(name);
+              } else {
+                throw err;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const sorted = schemaTopologicalSort(dependencyGraph);
+
+  const orderedSchemas = {};
+  for (const modelName of sorted) {
+    orderedSchemas[modelName] = schemas[modelName];
+  }
+
+  return orderedSchemas;
 }
 
 function normalizeSchemasForChecksum(oldSchema, currentSchema) {
@@ -159,9 +242,135 @@ export async function createMigration(name) {
   console.log(chalk.green(`✅ Migration created: ${filename}`));
 }
 
+/**
+ * Run all unapplied migrations
+ */
 export async function migrateUp() {
-  console.log("Running migrations...");
-  // check and run all unapplied migrations
+  console.log(chalk.cyan("🔍 Checking for unapplied migrations..."));
+
+  // Get all migration files
+  let migrationFiles;
+  if (!fs.existsSync(MIGRATIONS_DIR)) {
+    migrationFiles = [];
+  } else {
+    migrationFiles = fs
+      .readdirSync(MIGRATIONS_DIR)
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
+  }
+
+  if (migrationFiles.length === 0) {
+    console.log(chalk.yellow("⚠️ No migration files found."));
+    return;
+  }
+
+  // Fetch applied migrations from DB
+  const appliedMigrations = await getAllRows(`
+        SELECT name, checksum FROM _sqlbuns_migrations
+        WHERE direction = 'up' AND rolled_back = false
+      `);
+
+  const appliedMap = new Map(
+    appliedMigrations.map((m) => [m.name, m.checksum])
+  );
+
+  // Filter unapplied migrations
+  const unapplied = migrationFiles.filter((file) => !appliedMap.has(file));
+
+  if (unapplied.length === 0) {
+    console.log(chalk.green("✅ All migrations are synced up to db."));
+    return;
+  }
+
+  console.log(chalk.blue(`\nApplying ${unapplied.length} migrations...`));
+
+  for (const file of unapplied) {
+    /** CAVEAT -- From my initial process flow, this is designed to only have one unapplied migration
+     * at a time, this may be a bottleneck in some instances but the merit is allow us to determine
+     * at near 100% accuracy the current schema being processed
+     *
+     * Thus unapplied array lenght would be === 1
+     * */
+
+    const dbType = process.env.DATABASE_ENGINE;
+    const schema = JSON.parse(fs.readFileSync(SNAPSHOT_FILE, "utf-8"));
+    const filePath = path.join(MIGRATIONS_DIR, file);
+    const content = fs.readFileSync(filePath, "utf8");
+    const checksum = generateChecksum(schema);
+
+    console.log(chalk.cyan(`\n▶ Running migration: ${file}`));
+
+    let connection = null;
+    const isPostgres = dbType === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES;
+    const isMySQL = dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL;
+    const isSQLite = dbType === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE;
+    const useConnection = isPostgres || isMySQL;
+
+    try {
+      if (isPostgres) {
+        connection = await pool.connect();
+        await connection.query("BEGIN");
+      } else if (isMySQL) {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+      } else if (isSQLite) {
+        await pool.exec("BEGIN TRANSACTION");
+      }
+
+      if (useConnection) {
+        await connection.query(content);
+      } else {
+        await pool.exec(content);
+      }
+
+      const params = [file, checksum, "up", false];
+      let insertQuery;
+      if (isPostgres) {
+        insertQuery = `INSERT INTO _sqlbuns_migrations (name, checksum, direction, rolled_back) VALUES ($1, $2, $3, $4)`;
+        await connection.query(insertQuery, params);
+      } else if (isMySQL) {
+        insertQuery = `INSERT INTO _sqlbuns_migrations (name, checksum, direction, rolled_back) VALUES (?, ?, ?, ?)`;
+        await connection.query(insertQuery, params);
+      } else if (isSQLite) {
+        insertQuery = `INSERT INTO _sqlbuns_migrations (name, checksum, direction, rolled_back) VALUES (?, ?, ?, ?)`;
+        await pool.run(insertQuery, params);
+      }
+
+      // Commit transaction
+      if (isPostgres) {
+        await connection.query("COMMIT");
+      } else if (isMySQL) {
+        await connection.commit();
+      } else if (isSQLite) {
+        await pool.exec("COMMIT");
+      }
+
+      console.log(chalk.green(`✅ Migration applied: ${file}`));
+    } catch (err) {
+      // Rollback on error
+      if (isPostgres) {
+        if (connection) await connection.query("ROLLBACK");
+      } else if (isMySQL) {
+        if (connection) await connection.rollback();
+      } else if (isSQLite) {
+        await pool.exec("ROLLBACK");
+      }
+
+      console.error(chalk.red(`❌ Failed migration: ${file}`));
+      console.error(err.message);
+      process.exit(1);
+    } finally {
+      if (connection) {
+        if (isPostgres) {
+          connection.release();
+        } else if (isMySQL) {
+          connection.release();
+        }
+      }
+    }
+  }
+
+  console.log(chalk.green("\n🎉 All migrations applied successfully!"));
 }
 
 export async function migrateDown() {
