@@ -1,105 +1,54 @@
-const { pool, getSingleRow } = require("@anclatechs/sql-buns");
-const { defineModel, Fields } = require("@anclatechs/sql-buns-migrate");
-const { UserModelTriggers } = require("./signals");
-const { GAME_LEVELS } = require("./constants");
+import { defineModel, Fields } from "@anclatechs/sql-buns-migrate";
 
-const Games = defineModel(
-  "games",
-  {
-    id: { type: Fields.IntegerField, primaryKey: true, autoIncrement: true },
-    user_id: { type: Fields.IntegerField },
-    timestamp: { type: Fields.DateTimeField },
-  },
-  {
-    meta: {
-      tableName: "games",
-    },
-  }
-);
-
-const AuditLogs = defineModel("audit_logs", {
-  id: { type: Fields.IntegerField, primaryKey: true, autoIncrement: true },
-  message: { type: Fields.CharField },
-  created_at: { type: Fields.DateTimeField },
+export const SqlbunsMigrations = defineModel("_sqlbuns_migrations", {
+  id: { type: Fields.IntegerField, required: false },
+  name: { type: Fields.TextField, required: true },
+  checksum: { type: Fields.TextField, required: true },
+  previous_checksum: { type: Fields.TextField, required: false },
+  direction: { type: Fields.TextField, required: true, default: "'up'" },
+  applied_at: { type: Fields.TextField, required: false, default: "CURRENT_TIMESTAMP" },
+  rolled_back: { type: Fields.IntegerField, required: false, default: "0" },
+}, {
+  meta: { db_table: "_sqlbuns_migrations" }
 });
 
-const UserLevelHistory = defineModel("user_level_history", {
-  id: { type: Fields.IntegerField, primaryKey: true, autoIncrement: true },
-  user_id: { type: Fields.IntegerField },
-  old_level: { type: Fields.CharField },
-  new_level: { type: Fields.CharField },
-  changed_at: { type: Fields.DateTimeField },
+export const Users = defineModel("users", {
+  id: { type: Fields.IntegerField, required: true },
+  email: { type: Fields.TextField, required: true },
+  phone: { type: Fields.TextField, required: false },
+  age: { type: Fields.IntegerField, required: false },
+  total_games_played: { type: Fields.IntegerField, required: true, default: "0" },
+  level: { type: Fields.TextField, required: true, default: "'NOOB'" },
+  bonus_balance: { type: Fields.TextField, required: true },
+}, {
+  relations: {
+    games: { type: "hasMany", model: "games", foreignKey: "user_id" },
+  },
+  meta: { db_table: "users" }
 });
 
-const Users = defineModel(
-  "users",
-  {
-    id: { type: Fields.IntegerField, primaryKey: true, autoIncrement: true },
-    email: { type: Fields.CharField, unique: true },
-    phone: { type: Fields.CharField, nullable: true },
-    age: { type: Fields.IntegerField, nullable: true },
-    total_games_played: { type: Fields.IntegerField, default: 0 },
-    level: {
-      type: Fields.EnumField,
-      nullable: false,
-      choices: GAME_LEVELS,
-      default: "NOOB",
-    },
-    bonus_balance: {
-      type: Fields.DecimalField,
-      maxDigits: 5,
-      decimalPlaces: 2,
-    },
-  },
-  {
-    relations: {
-      games: { type: "hasMany", model: "games", foreignKey: "user_id" },
-    },
-    triggers: {
-      afterInsert: UserModelTriggers.AFTER_INSERT,
-      afterUpdate: UserModelTriggers.AFTER_UPDATE,
-    },
-    meta: {
-      tableName: "users",
-      comment: "Users migrated from v0",
-      indexes: [{ fields: ["email"], unique: true }],
-    },
-    methods: {
-      async getUserProfile(id) {
-        this.assertParams({ id, required: true, type: "number", min: 1 });
-        const user = await getSingleRow("SELECT * FROM ?? WHERE id = ?", [
-          this.meta.tableName,
-          id,
-        ]);
-        if (!user) return null;
+export const Games = defineModel("games", {
+  id: { type: Fields.IntegerField, required: true },
+  user_id: { type: Fields.IntegerField, required: true },
+  timestamp: { type: Fields.TextField, required: true, default: "'CURRENT_TIMESTAMP'" },
+}, {
+  meta: { db_table: "games" }
+});
 
-        return user;
-      },
+export const AuditLogs = defineModel("audit_logs", {
+  id: { type: Fields.IntegerField, required: true },
+  message: { type: Fields.TextField, required: true },
+  created_at: { type: Fields.TextField, required: true, default: "'CURRENT_TIMESTAMP'" },
+}, {
+  meta: { db_table: "audit_logs" }
+});
 
-      async updateLevel(id, newLevel) {
-        this.assertParams([
-          { id, required: true, type: "number", min: 1 },
-          {
-            newLevel,
-            required: true,
-            enum: GAME_LEVELS,
-          },
-        ]);
-
-        await pool.query("UPDATE ?? SET level = ? WHERE id = ?", [
-          this.meta.tableName,
-          newLevel,
-          id,
-        ]);
-        return { success: true, newLevel };
-      },
-    },
-  }
-);
-
-module.exports = {
-  Users,
-  Games,
-  AuditLogs,
-  UserLevelHistory,
-};
+export const UserLevelHistory = defineModel("user_level_history", {
+  id: { type: Fields.IntegerField, required: true },
+  user_id: { type: Fields.IntegerField, required: true },
+  old_level: { type: Fields.TextField, required: true },
+  new_level: { type: Fields.TextField, required: true },
+  changed_at: { type: Fields.TextField, required: true, default: "'CURRENT_TIMESTAMP'" },
+}, {
+  meta: { db_table: "user_level_history" }
+});

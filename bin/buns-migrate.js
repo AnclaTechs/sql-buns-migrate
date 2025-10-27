@@ -18,7 +18,7 @@ const program = new Command();
       .version("1.0.0");
 
     program
-      .command("insectdb")
+      .command("inspectdb")
       .description("Introspects existing DB and writes models/index.js")
       .action(async () => {
         await inspectdb();

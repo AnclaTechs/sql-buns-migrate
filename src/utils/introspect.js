@@ -53,36 +53,45 @@ async function confirmOverwrite(filePath) {
 export async function inspectdb() {
   console.log("🔍 Inspecting connected database...");
 
-  const client = await pool.connect();
-  let tables = [];
-
-  // Determine DB type
   const dbType = process.env.DATABASE_ENGINE;
+
+  let connection = null;
+  const isPostgres = dbType === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES;
+  const isMySQL = dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL;
+  const isSQLite = dbType === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE;
+  const useConnection = isPostgres || isMySQL;
+
+  if (isPostgres) {
+    connection = await pool.connect();
+  } else if (isMySQL) {
+    connection = await pool.getConnection();
+  }
+
   if (!SUPPORTED_SQL_DIALECTS.includes(dbType)) {
     throw new Error(
       `${dbType} DATABASE_ENGINE not supported. Review .env file.`
     );
   }
+
   console.log(`📦 Detected database: ${dbType}`);
 
   try {
-    if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES) {
-      const res = await client.query(`
+    // Fetch all tables
+    let tables = [];
+    if (isPostgres) {
+      const res = await connection.query(`
         SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'public' AND table_type = 'BASE TABLE';
       `);
       tables = res.rows.map((r) => r.table_name);
-    } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL) {
-      const [rows] = await client.query("SHOW TABLES;");
+    } else if (isMySQL) {
+      const [rows] = await connection.query("SHOW TABLES;");
       tables = rows.map((r) => Object.values(r)[0]);
-    } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
-      const res = await client.all(
+    } else if (isSQLite) {
+      const res = await pool.all(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
       );
       tables = res.map((r) => r.name);
-    } else {
-      console.error("❌ Unsupported database type for inspectdb()");
-      process.exit(1);
     }
 
     if (tables.length === 0) {
@@ -92,18 +101,49 @@ export async function inspectdb() {
 
     console.log(`🧱 Found ${tables.length} tables: ${tables.join(", ")}`);
 
-    // Introspect columns for each table
+    // Step 1: Gather model schemas
     const schema = {};
+    const dependencies = []; // store foreign key relationships temporarily
+
     for (const table of tables) {
-      const model = await introspectTable(client, dbType, table);
-      const fks = await introspectForeignKeys(client, dbType, table);
-      schema[table] = { ...model, relations: fks };
+      const model = await introspectTable(connection || pool, dbType, table);
+      const fks = await introspectForeignKeys(
+        connection || pool,
+        dbType,
+        table
+      );
+
+      // Collect dependency info — don't assign yet
+      for (const [refTable, rel] of Object.entries(fks)) {
+        dependencies.push({
+          parent: rel.model, // referenced table
+          child: table, // table that holds the FK
+          type: rel.type,
+          foreignKey: rel.foreignKey,
+          through: rel.through || null,
+        });
+      }
+
+      schema[table] = { ...model, relations: {} };
     }
 
-    // Format models/index.js
+    // Step 2: Build only parent-side relations
+    for (const dep of dependencies) {
+      if (!schema[dep.parent]) continue;
+      const parentRelations = schema[dep.parent].relations;
+
+      // Assign relation only on the parent side
+      parentRelations[dep.child] = {
+        type: dep.type,
+        model: dep.child,
+        foreignKey: dep.foreignKey,
+        ...(dep.through ? { through: dep.through } : {}),
+      };
+    }
+
+    // Step 3: Continue your original flow
     const modelFile = buildModelFile(schema);
 
-    // Ask for confirmation before overwriting
     const proceed = await confirmOverwrite(MODELS_PATH);
     if (!proceed) {
       console.log("🚫 Operation cancelled.");
@@ -113,7 +153,7 @@ export async function inspectdb() {
     fs.writeFileSync(MODELS_PATH, modelFile);
     console.log(`✅ Generated: ${MODELS_PATH}`);
 
-    // Save baseline migration
+    // Create baseline migration
     if (!fs.existsSync(MIGRATIONS_DIR)) fs.mkdirSync(MIGRATIONS_DIR);
     const baselineFile = path.join(
       MIGRATIONS_DIR,
@@ -125,15 +165,14 @@ export async function inspectdb() {
     );
     console.log(`📜 Created baseline migration: ${baselineFile}`);
 
-    // Compute and record checksum
     const checksum = generateChecksum(modelFile);
-    await recordBaselineMigration(client, checksum);
+    await recordBaselineMigration(connection || pool, checksum);
 
     console.log("✅ Inspectdb completed successfully.");
   } catch (err) {
     console.error("❌ Inspectdb failed:", err.message);
   } finally {
-    client.release();
+    if (useConnection) connection.release();
   }
 }
 
@@ -183,28 +222,25 @@ async function introspectTable(client, dbType, table) {
  * Extract foreign key relations
  */
 async function introspectForeignKeys(client, dbType, table) {
-  const relations = {};
   const foreignKeys = [];
 
-  // Gather raw FK metadata
+  // 1️⃣ Gather FK metadata per dialect
   if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES) {
     const res = await client.query(`
       SELECT
         kcu.column_name AS fk_column,
         ccu.table_name AS ref_table,
         ccu.column_name AS ref_column,
-        tc.constraint_name,
-        tc.constraint_type
-      FROM
-        information_schema.table_constraints AS tc
-        JOIN information_schema.key_column_usage AS kcu
-          ON tc.constraint_name = kcu.constraint_name
-        JOIN information_schema.constraint_column_usage AS ccu
-          ON ccu.constraint_name = tc.constraint_name
+        tc.constraint_name
+      FROM information_schema.table_constraints AS tc
+      JOIN information_schema.key_column_usage AS kcu
+        ON tc.constraint_name = kcu.constraint_name
+      JOIN information_schema.constraint_column_usage AS ccu
+        ON ccu.constraint_name = tc.constraint_name
       WHERE tc.constraint_type = 'FOREIGN KEY'
         AND tc.table_name = '${table}';
     `);
-    for (const row of res.rows) foreignKeys.push(row);
+    foreignKeys.push(...res.rows);
   } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL) {
     const [rows] = await client.query(`
       SELECT
@@ -227,37 +263,42 @@ async function introspectForeignKeys(client, dbType, table) {
     }
   }
 
-  if (foreignKeys.length === 0) return relations;
+  // No FKs
+  if (foreignKeys.length === 0) return {};
 
-  // Detect if this is a join (many-to-many) table
+  // 2️⃣ Detect if this is a join table
   const isJoinTable = await detectJoinTable(client, dbType, table, foreignKeys);
 
+  // For join tables, just return enough info to mark them as "through"
   if (isJoinTable) {
     const [fk1, fk2] = foreignKeys;
-    relations[fk1.ref_table] = {
-      type: "manyToMany",
-      model: fk1.ref_table,
-      through: table,
-      joinColumn: fk1.fk_column,
-      inverseJoinColumn: fk2.fk_column,
+    return {
+      [fk1.ref_table]: {
+        type: "manyToMany",
+        model: fk1.ref_table,
+        through: table,
+        joinColumn: fk1.fk_column,
+        inverseJoinColumn: fk2.fk_column,
+      },
+      [fk2.ref_table]: {
+        type: "manyToMany",
+        model: fk2.ref_table,
+        through: table,
+        joinColumn: fk2.fk_column,
+        inverseJoinColumn: fk1.fk_column,
+      },
     };
-    relations[fk2.ref_table] = {
-      type: "manyToMany",
-      model: fk2.ref_table,
-      through: table,
-      joinColumn: fk2.fk_column,
-      inverseJoinColumn: fk1.fk_column,
-    };
-    return relations;
   }
 
-  // Otherwise detect hasOne vs hasMany
+  // 3️⃣ For normal FK tables, return minimal info (the direction is resolved later)
+  const relations = {};
   for (const fk of foreignKeys) {
     const unique = await isColumnUnique(client, dbType, table, fk.fk_column);
     relations[fk.ref_table] = {
       type: unique ? "hasOne" : "hasMany",
       model: fk.ref_table,
       foreignKey: fk.fk_column,
+      ref_column: fk.ref_column,
     };
   }
 
