@@ -257,7 +257,7 @@ The framework auto-manages a tracking table:
 
 ### 💡 Project Philosophy
 
-> Developers should stay close to SQL, learn it, use it, tweak it, enjoy the trill . It's declarative, safe, and intuitive—it shouldn't feel tedious and be abstracted away in ORM.
+> Developers should stay close to SQL, learn it, use it, tweak it, enjoy the thrill . It's declarative, safe, and intuitive—it shouldn't feel tedious and be abstracted away in ORM.
 
 
 `sql-buns-migrate` simplifies reusable migration logic by letting developers define schema and functions once, while keeping close to SQL as possible in a safe, explicit, yet reversible, and readable manner.
