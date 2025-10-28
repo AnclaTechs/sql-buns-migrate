@@ -25,7 +25,8 @@ export async function resolveModelsPath() {
         previous_checksum VARCHAR(64),
         direction VARCHAR(10) CHECK (direction IN ('up', 'down')) DEFAULT 'up' NOT NULL,
         applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        rolled_back BOOLEAN DEFAULT FALSE
+        rolled_back BOOLEAN DEFAULT FALSE,
+        rolled_back_at TIMESTAMP
       );
     `);
     } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL) {
@@ -37,7 +38,8 @@ export async function resolveModelsPath() {
         previous_checksum VARCHAR(64),
         direction VARCHAR(10) CHECK (direction IN ('up', 'down')) DEFAULT 'up' NOT NULL,
         applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        rolled_back BOOLEAN DEFAULT FALSE
+        rolled_back BOOLEAN DEFAULT FALSE,
+        rolled_back_at TIMESTAMP
       );
     `);
     } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
@@ -49,7 +51,8 @@ export async function resolveModelsPath() {
         previous_checksum VARCHAR(64),
         direction VARCHAR(10) CHECK (direction IN ('up', 'down')) DEFAULT 'up' NOT NULL,
         applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        rolled_back INTEGER DEFAULT 0
+        rolled_back INTEGER DEFAULT 0,
+        rolled_back_at TIMESTAMP
       );
     `);
     }

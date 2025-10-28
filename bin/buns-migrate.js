@@ -46,7 +46,6 @@ const program = new Command();
       .description("Revert the last migration")
       .action(async () => {
         await migrateDown();
-        console.log(chalk.yellow("🔁 Last migration reverted"));
       });
 
     program.parse(process.argv);

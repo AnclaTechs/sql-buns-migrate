@@ -10,7 +10,7 @@ import { SUPPORTED_SQL_DIALECTS_TYPES } from "./utils/constants.js";
 const MIGRATIONS_DIR = path.join(process.cwd(), "migrations");
 const SNAPSHOT_FILE = path.join(MIGRATIONS_DIR, "schema_snapshot.json");
 
-const entryPath = "../../";
+const entryPath = "../";
 const pkgPath = path.join(path.dirname(entryPath), "package.json");
 const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
 const sqlBunsMigrateCurrentversion = pkg?.version || "p1";
@@ -405,6 +405,89 @@ export async function migrateUp() {
 }
 
 export async function migrateDown() {
-  console.log("Reverting last migration...");
-  //rollback logic
+  console.log("🔁 Reverting last migration...");
+
+  const dbType = process.env.DATABASE_ENGINE;
+  let connection = null;
+  const isPostgres = dbType === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES;
+  const isMySQL = dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL;
+  const isSQLite = dbType === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE;
+  const useConnection = isPostgres || isMySQL;
+
+  if (isPostgres) {
+    connection = await pool.connect();
+  } else if (isMySQL) {
+    connection = await pool.getConnection();
+  }
+
+  try {
+    // Get latest applied (non-reverted) migration
+    const [lastApplied] = await getAllRows(`
+      SELECT * FROM _sqlbuns_migrations
+      ORDER BY applied_at DESC
+      LIMIT 1;
+    `);
+
+    if (!lastApplied) {
+      console.log("No applied migrations to roll back.");
+      return;
+    }
+
+    if (lastApplied.rolled_back) {
+      console.log(chalk.yellow(`${lastApplied.name} already rolled back.`));
+      return;
+    }
+
+    console.log({ lastApplied });
+    const lastFile = lastApplied.name.replace(".sql", ".js");
+    const rollbackPath = path.join(MIGRATIONS_DIR, lastFile);
+
+    if (!fs.existsSync(rollbackPath)) {
+      console.log(chalk.yellow(`No rollback file found for ${lastFile}`));
+      return;
+    }
+
+    const rollbackModule = await import(rollbackPath);
+
+    if (!rollbackModule.down) {
+      console.log(chalk.yellow(`No 'down' function found in ${lastFile}`));
+      return;
+    }
+
+    console.log(`⏪ Running rollback for ${lastFile}...`);
+    await rollbackModule.down(connection || pool);
+
+    // Mark migration as reverted
+    if (isPostgres) {
+      await connection.query(
+        `UPDATE _sqlbuns_migrations 
+         SET rolled_back = true, direction = 'down', rolled_back_at = NOW() 
+         WHERE id = $1`,
+        [lastApplied.id]
+      );
+    } else if (isMySQL) {
+      await connection.query(
+        `UPDATE _sqlbuns_migrations 
+         SET rolled_back = true, direction = 'down', rolled_back_at = NOW() 
+         WHERE id = ?`,
+        [lastApplied.id]
+      );
+    } else if (isSQLite) {
+      await pool.run(
+        `UPDATE _sqlbuns_migrations 
+         SET rolled_back = 1, direction = 'down', rolled_back_at = datetime('now') 
+         WHERE id = ?`,
+        [lastApplied.id]
+      );
+    }
+
+    console.log(chalk.green(`✅ Rolled back migration: ${lastFile}`));
+  } catch (err) {
+    console.error(chalk.red(`❌ Rollback failed: ${err.message}`));
+  } finally {
+    if (useConnection && connection) {
+      connection.release();
+    }
+  }
 }
+
