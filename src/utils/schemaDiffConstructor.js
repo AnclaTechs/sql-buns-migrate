@@ -188,7 +188,13 @@ async function _validateTriggerBody(body, allNewModels) {
   return { action: "createNow" };
 }
 
-function _handleMetaDiff(table, oldMeta = {}, newMeta = {}, sql = []) {
+function _handleMetaDiff(
+  table,
+  oldMeta = {},
+  newMeta = {},
+  sql = [],
+  reverseSQL = []
+) {
   // --- Table rename ---
   if (
     oldMeta.tableName &&
@@ -197,6 +203,9 @@ function _handleMetaDiff(table, oldMeta = {}, newMeta = {}, sql = []) {
   ) {
     sql.push(
       `ALTER TABLE ${oldMeta.tableName} RENAME TO ${newMeta.tableName};`
+    );
+    reverseSQL.push(
+      `ALTER TABLE ${newMeta.tableName} RENAME TO ${oldMeta.tableName};`
     );
   }
 
@@ -243,13 +252,20 @@ function _handleMetaDiff(table, oldMeta = {}, newMeta = {}, sql = []) {
           ", "
         )});`
       );
+      reverseSQL.push(`DROP INDEX IF EXISTS ${idx.name}`);
     }
   }
 
   // Drop removed indexes
   for (const oldIdx of oldIndexes) {
     if (!newIndexMap[oldIdx.name]) {
+      const unique = oldIdx.unique ? "UNIQUE " : "";
       sql.push(`DROP INDEX IF EXISTS ${oldIdx.name};`);
+      reverseSQL.push(
+        `CREATE ${unique}INDEX ${oldIdx.name} ON ${table} (${oldIdx.fields.join(
+          ", "
+        )});`
+      );
     }
   }
 }
@@ -263,6 +279,7 @@ export async function _handleRelationsDiff(
   newRelations = {},
   allNewModels = {},
   sql = [],
+  reverseSQL = [],
   deferedSql = [],
   pendingFKConstraints = []
 ) {
@@ -322,11 +339,14 @@ export async function _handleRelationsDiff(
   const createRelationSql = async (rel, baseTable) => {
     if (rel.type === "manyToMany") {
       return [
-        `CREATE TABLE IF NOT EXISTS ${rel.through} (
+        [
+          `CREATE TABLE IF NOT EXISTS ${rel.through} (
           ${rel.foreignKey} INTEGER REFERENCES ${baseTable}(id),
           ${rel.otherKey} INTEGER REFERENCES ${rel.model}(id),
           PRIMARY KEY (${rel.foreignKey}, ${rel.otherKey})
         );`,
+        ],
+        [`DROP TABLE IF EXISTS ${rel.through};`],
       ];
     } else if (rel.type === "hasOne" || rel.type === "hasMany") {
       const tableExists = await _tableExistsInDb(rel.model);
@@ -336,8 +356,14 @@ export async function _handleRelationsDiff(
           process.exit();
         } else {
           return [
-            `ALTER TABLE ${rel.model} ADD CONSTRAINT fk_${rel.model}_${rel.foreignKey} FOREIGN KEY (${rel.foreignKey}) REFERENCES ${baseTable}(id);`,
-            `CREATE INDEX IF NOT EXISTS idx_${rel.model}_${rel.foreignKey} ON ${rel.model} (${rel.foreignKey});`,
+            [
+              `ALTER TABLE ${rel.model} ADD CONSTRAINT fk_${rel.model}_${rel.foreignKey} FOREIGN KEY (${rel.foreignKey}) REFERENCES ${baseTable}(id);`,
+              `CREATE INDEX IF NOT EXISTS idx_${rel.model}_${rel.foreignKey} ON ${rel.model} (${rel.foreignKey});`,
+            ],
+            [
+              `DROP INDEX IF EXISTS idx_${rel.model}_${rel.foreignKey};`,
+              `ALTER TABLE ${rel.model} DROP CONSTRAINT fk_${rel.model}_${rel.foreignKey};`,
+            ],
           ];
         }
       } else {
@@ -367,10 +393,10 @@ export async function _handleRelationsDiff(
         } else {
           // UNABLE TO RECONCILE
         }
-        return [];
+        return [[], []];
       }
     }
-    return [];
+    return [[], []];
   };
 
   for (const [relName, rel] of Object.entries(newRelations)) {
@@ -394,8 +420,9 @@ export async function _handleRelationsDiff(
     }
 
     if (action === "createNow") {
-      const relSql = await createRelationSql(rel, table);
+      const [relSql, reverseRelSQL] = await createRelationSql(rel, table);
       sql.push(...relSql);
+      reverseSQL.push(...reverseRelSQL);
     }
   }
 
@@ -414,13 +441,15 @@ export async function _handleRelationsDiff(
         case "defer":
           // IF AT THIS STAGE NO ERROR IS Received, table is most likely in batch and should be included
           // Create the now-valid relation but defer the sql.push
-          var relSql = await createRelationSql(rel, base);
+          var [relSql, reverseRelSQL] = await createRelationSql(rel, base);
           deferedSql.push(...relSql);
+          reverseSQL.push(...reverseRelSQL);
           break;
         case "createNow":
           // Create the now-valid relation
-          var relSql = await createRelationSql(rel, base);
+          var [relSql, reverseRelSQL] = await createRelationSql(rel, base);
           sql.push(...relSql);
+          reverseSQL.push(...reverseRelSQL);
           break;
         default:
           console.error(
@@ -468,6 +497,7 @@ async function _handleFieldDiff(
   oldFields = {},
   newFields = {},
   sql = [],
+  reverseSQL = [],
   warnings = [],
   options = {}
 ) {
@@ -504,6 +534,9 @@ async function _handleFieldDiff(
           sql.push(
             `ALTER TABLE ${table} RENAME COLUMN ${oldCol} TO ${newCol};`
           );
+          reverseSQL.push(
+            `ALTER TABLE ${table} RENAME COLUMN ${newCol} TO ${oldCol};`
+          );
           dropped.splice(dropped.indexOf(oldCol), 1);
           added.splice(added.indexOf(newCol), 1);
           break;
@@ -515,6 +548,16 @@ async function _handleFieldDiff(
   // Step 2: Drop remaining columns
   for (const col of dropped) {
     sql.push(`ALTER TABLE ${table} DROP COLUMN ${col};`);
+    const oldDef = oldFields[col];
+    const oldDefVal =
+      typeof oldDef.default === "string"
+        ? `'${oldDef.default}'`
+        : oldDef.default;
+    reverseSQL.push(
+      `ALTER TABLE ${table} ADD COLUMN ${col} ${oldDef.type} ${
+        oldDef.default !== undefined ? ` DEFAULT ${oldDefVal}` : ""
+      };`
+    );
   }
 
   // Step 3: Add new columns
@@ -537,6 +580,7 @@ async function _handleFieldDiff(
         notNull ? " NOT NULL" : ""
       }${def.default !== undefined ? ` DEFAULT ${defVal}` : ""};`
     );
+    reverseSQL.push(`ALTER TABLE ${table} DROP COLUMN ${col};`);
   }
 
   // Step 4: Detect modifications on existing columns
@@ -550,6 +594,9 @@ async function _handleFieldDiff(
     // Type changed
     if (def.type !== oldDef.type) {
       sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${def.type};`);
+      reverseSQL.push(
+        `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${oldDef.type};`
+      );
     }
 
     // Nullability changed
@@ -559,17 +606,32 @@ async function _handleFieldDiff(
           newNullable ? "DROP" : "SET"
         } NOT NULL;`
       );
+      reverseSQL.push(
+        `ALTER TABLE ${table} ALTER COLUMN ${col} ${
+          oldNullable ? "DROP" : "SET"
+        } NOT NULL;`
+      );
     }
 
     // Default changed
     if (def.default !== oldDef.default) {
       if (def.default === undefined) {
         sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`);
+        const oldDefVal =
+          typeof oldDef.default === "string"
+            ? `'${oldDef.default}'`
+            : oldDef.default;
+        reverseSQL.push(
+          `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${oldDefVal};`
+        );
       } else {
         const defVal =
           typeof def.default === "string" ? `'${def.default}'` : def.default;
         sql.push(
           `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${defVal};`
+        );
+        reverseSQL.push(
+          `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`
         );
       }
     }
@@ -583,7 +645,8 @@ async function _handleTriggersDiff(
   allNewModels = {},
   oldTriggers = {},
   newTriggers = {},
-  sql = []
+  sql = [],
+  reverseSQL = []
 ) {
   // Normalize an object of triggers (preserving insertion order) into an array
   // Each item will have:
@@ -732,6 +795,7 @@ async function _handleTriggersDiff(
           const whenClause = when ? `\n  WHEN (${when})` : "";
 
           let triggerSql;
+          let reverseTriggerSql;
           switch (process.env.DATABASE_ENGINE) {
             case SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES:
               sql.push(
@@ -742,6 +806,7 @@ async function _handleTriggersDiff(
                   `END;\n` +
                   `$$ LANGUAGE plpgsql;`
               );
+              reverseSQL.push(`DROP FUNCTION IF EXISTS ${funcName}();`);
               triggerSql = `CREATE TRIGGER ${createName}\n  ${timing} ${event}\n  ON ${table}\n  FOR EACH ROW${whenClause}\n  EXECUTE FUNCTION ${funcName}();`;
               break;
 
@@ -755,6 +820,7 @@ async function _handleTriggersDiff(
           }
 
           sql.push(triggerSql);
+          reverseSQL.push(`DROP TRIGGER IF EXISTS ${createName} ON ${table};`);
         })
       );
     })
@@ -767,7 +833,9 @@ export function _generateCreateTableSQL(
   table,
   newModel,
   sql = [],
-  pendingFKConstraints = []
+  reverseSQL = [],
+  pendingFKConstraints = [],
+  leanSQLBuild = false // generate SQL but no push to sql or reverseSQL
 ) {
   const engine = process.env.DATABASE_ENGINE;
   const columns = [];
@@ -941,13 +1009,19 @@ export function _generateCreateTableSQL(
     ",\n  "
   )}\n);`;
 
-  sql.push(tableSQL);
+  if (!leanSQLBuild) {
+    sql.push(tableSQL);
+    reverseSQL.push(
+      `DROP TABLE IF EXISTS ${newModel.meta?.tableName || newModel.name};`
+    );
+  }
 
   return tableSQL;
 }
 
 export async function diffSchemas(oldSchema, newSchema) {
   const sql = [];
+  const reverseSQL = [];
   const warnings = [];
   const deferredRelationSqlDiff = [];
   const pendingFKConstraints = [];
@@ -964,11 +1038,17 @@ export async function diffSchemas(oldSchema, newSchema) {
     // If table doesn’t exist in old schema, create it
     if (Object.entries(oldModel).length == 0) {
       tableIsNew = true;
-      _generateCreateTableSQL(table, newModel, sql, pendingFKConstraints);
+      _generateCreateTableSQL(
+        table,
+        newModel,
+        sql,
+        reverseSQL,
+        pendingFKConstraints
+      );
     }
 
     // Handle meta-level changes (table rename, comment, indexes)
-    _handleMetaDiff(table, oldModel.meta, newModel.meta, sql);
+    _handleMetaDiff(table, oldModel.meta, newModel.meta, sql, reverseSQL);
 
     if (!tableIsNew) {
       // Handle fields (columns)
@@ -977,6 +1057,7 @@ export async function diffSchemas(oldSchema, newSchema) {
         oldModel.fields,
         newModel.fields,
         sql,
+        reverseSQL,
         warnings
       );
     }
@@ -989,6 +1070,7 @@ export async function diffSchemas(oldSchema, newSchema) {
       newModel.relations,
       newModelsObject,
       sql,
+      reverseSQL,
       deferredRelationSqlDiff,
       pendingFKConstraints
     );
@@ -999,7 +1081,8 @@ export async function diffSchemas(oldSchema, newSchema) {
       newModelsObject,
       oldModel.triggers,
       newModel.triggers,
-      sql
+      sql,
+      reverseSQL
     );
 
     // Handle dropped tables
@@ -1012,6 +1095,15 @@ export async function diffSchemas(oldSchema, newSchema) {
 
       if (!existsInNew) {
         sql.push(`DROP TABLE IF EXISTS ${table};`);
+        const [reverseTableSQL, _] = _generateCreateTableSQL(
+          table,
+          oldModel,
+          [],
+          [],
+          [],
+          true
+        );
+        reverseSQL.push(reverseTableSQL);
         warnings.push(`Table '${table}' was removed.`);
       }
     }
@@ -1019,5 +1111,5 @@ export async function diffSchemas(oldSchema, newSchema) {
 
   sql.push(...deferredRelationSqlDiff);
 
-  return { sql, warnings };
+  return { sql, reverseSQL, warnings };
 }

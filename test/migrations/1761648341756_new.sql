@@ -15,13 +15,6 @@ CREATE TRIGGER trg_users_insert_after_0
   BEGIN
     UPDATE users SET bonus_balance = 10.00 WHERE id = NEW.id;
   END;
-CREATE TRIGGER trg_users_insert_after_1
-  AFTER INSERT
-  ON users
-  FOR EACH ROW
-  BEGIN
-    INSERT INTO audit_logs (message, created_at) VALUES ( 'New user created: ' || NEW.id, CURRENT_TIMESTAMP );
-  END;
 CREATE TRIGGER trg_users_update_after_0
   AFTER UPDATE
   ON users
@@ -29,6 +22,13 @@ CREATE TRIGGER trg_users_update_after_0
   WHEN (OLD.level <> NEW.level)
   BEGIN
     INSERT INTO user_level_history ( user_id, old_level, new_level, changed_at ) VALUES ( NEW.id, OLD.level, NEW.level, CURRENT_TIMESTAMP );
+  END;
+CREATE TRIGGER trg_users_insert_after_1
+  AFTER INSERT
+  ON users
+  FOR EACH ROW
+  BEGIN
+    INSERT INTO audit_logs (message, created_at) VALUES ( 'New user created: ' || NEW.id, CURRENT_TIMESTAMP );
   END;
 CREATE TRIGGER trg_users_update_after_1
   AFTER UPDATE
