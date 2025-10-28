@@ -17,7 +17,7 @@ SQL-Buns Migrate is the official migration tool for [@anclatechs/sql-buns](https
 
 
 
-## 📦 Installation
+### 📦 Installation
 ```bash
 npm install sql-buns-migrate
 ```
@@ -27,7 +27,7 @@ yarn add sql-buns-migrate
 ```
 <hr/>
 
-#### 🧱 Database Modeling
+### 🧱 Database Modeling
 
 Models are defined with `defineModel()`, using structured field definitions, metadata, and optional relations, triggers, and methods.
 
@@ -128,6 +128,7 @@ const Users = defineModel(
 </details>
 
 <hr/>
+
 ### Model Structure
 
 | Section       | Description                                                   |
@@ -140,7 +141,7 @@ const Users = defineModel(
 
 
 
-### 🔒 `this.assertParams`
+## 🔒 `this.assertParams`
 
 A lightweight runtime validator for your model methods.
 Allowing you to validate arguments in either object or array form:
@@ -182,8 +183,6 @@ All CLI commands use the prefix `buns-migrate`.
 | `buns-migrate up`            | Applies all pending migrations sequentially.                        |
 | `buns-migrate down`          | Rolls back the **latest migration only** (once per migration).      |
 
-
-<hr/>
 
 ### Example CLI Usage
 
@@ -239,7 +238,6 @@ The rollback system ensures:
 
 Your DATABASE_ENGINE environment variable determines which dialect to use. Read more on .env setup here: [@anclatechs/sql-buns](https://www.npmjs.com/package/@anclatechs/sql-buns)
 
-<hr/>
 
 ###  🧾 Table _sqlbuns_migrations
 
