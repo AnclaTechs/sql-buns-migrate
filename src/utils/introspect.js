@@ -24,7 +24,7 @@ if (!fs.existsSync(resolvedModelPath)) {
   );
 }
 
-const MIGRATIONS_DIR = path.join(process.cwd(), "migrations");
+const MIGRATIONS_DIR = path.join(process.cwd(), "database/migrations");
 const SNAPSHOT_FILE = path.join(MIGRATIONS_DIR, "schema_snapshot.json");
 const MODELS_PATH = resolvedModelPath;
 

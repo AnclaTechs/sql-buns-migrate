@@ -7,7 +7,7 @@ import { loadModels } from "./utils/loadModels.js";
 import { diffSchemas } from "./utils/schemaDiffConstructor.js";
 import { inspectDBForDrift } from "./utils/integrity.js";
 import { SUPPORTED_SQL_DIALECTS_TYPES } from "./utils/constants.js";
-const MIGRATIONS_DIR = path.join(process.cwd(), "migrations");
+const MIGRATIONS_DIR = path.join(process.cwd(), "database/migrations");
 const SNAPSHOT_FILE = path.join(MIGRATIONS_DIR, "schema_snapshot.json");
 
 const entryPath = "../";

@@ -8,7 +8,7 @@
  * if you are absolutely certain of the implications.
  */
 import { pool } from "@anclatechs/sql-buns";
-export async function up() {/**Go to file: 1761658288935_new.sql*/}
+export async function up() {/**Go to file: 1761673853846_new.sql*/}
 export async function down() {
   await pool.run(`DROP TABLE IF EXISTS users;
 DROP INDEX IF EXISTS idx_users_email
