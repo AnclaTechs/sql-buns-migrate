@@ -250,7 +250,7 @@ The framework auto-manages a tracking table:
 | `direction`   | ENUM `'up'` or `'down'`         |
 | `rolled_back` | Boolean               |
 | `applied_at`  | Timestamp when applied     |
-| `reverted_at` | Timestamp when rolled back |
+| `rolled_back_at` | Timestamp when rolled back |
 
 
 ### 💡 Project Philosophy
@@ -268,13 +268,15 @@ The framework auto-manages a tracking table:
   📂 database
     📂 models/
       📄 index.js
-    📂signals
-  📂 migrations/
-    📄 2025_10_26_1200_add_users_table.sql
-    📄 2025_10_26_1200_add_users_table.js
-  📂 app
+    📂 signals/
+      📄 customSignal.js
+    📂 migrations/
+      📄 2025_10_26_1200_add_users_table.sql
+      📄 2025_10_26_1200_add_users_table.js
+    📄 schema_snapshot.json
+  📂 your_app
   
-  ⚙.env
+  ⚙ .env
 
 ```
 
