@@ -7,6 +7,10 @@ import {
   SUPPORTED_SQL_DIALECTS,
   SUPPORTED_SQL_DIALECTS_TYPES,
 } from "./constants.js";
+import {
+  extractSchemas,
+  normalizeSchemasForChecksum,
+} from "./extractSchema.js";
 
 const pkgPath = path.join(process.cwd(), "package.json");
 const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
@@ -155,6 +159,15 @@ export async function inspectdb() {
 
     // Create baseline migration
     if (!fs.existsSync(MIGRATIONS_DIR)) fs.mkdirSync(MIGRATIONS_DIR);
+
+    const currentSchema = extractSchemas(schema);
+    const { oldFiltered, currentFiltered } = normalizeSchemasForChecksum(
+      {},
+      currentSchema
+    );
+
+    fs.writeFileSync(SNAPSHOT_FILE, JSON.stringify(currentSchema, null, 2));
+
     const baselineFile = path.join(
       MIGRATIONS_DIR,
       "0000_initial_bootstrap.sql"
@@ -165,7 +178,9 @@ export async function inspectdb() {
     );
     console.log(`📜 Created baseline migration: ${baselineFile}`);
 
-    const checksum = generateChecksum(modelFile);
+    // Checksum is generated on the Normalised filter not the raw Model file
+    const checksum = generateChecksum(currentFiltered);
+
     await recordBaselineMigration(connection || pool, checksum);
 
     console.log("✅ Inspectdb completed successfully.");
