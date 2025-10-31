@@ -505,7 +505,7 @@ function buildModelFile(schema) {
       file += "  },\n";
     }
 
-    file += `  meta: { db_table: "${def.name}" }\n});\n\n`;
+    file += `  meta: { tableName: "${def.name}" }\n});\n\n`;
   }
 
   return file.trim() + "\n";
