@@ -2,6 +2,7 @@ import { getSingleRow } from "@anclatechs/sql-buns";
 import chalk from "chalk";
 import readline from "readline";
 import { SUPPORTED_SQL_DIALECTS_TYPES } from "./constants.js";
+import { rebuildTableForSqlite } from "./sqlite/index.js";
 const dbType = process.env.DATABASE_ENGINE;
 async function _tableExistsInDb(table) {
   try {
@@ -353,6 +354,11 @@ export async function _handleRelationsDiff(
       if (tableExists) {
         if (dbType == SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
           // THROW ERROR due to SQLite limitation
+          console.error(
+            chalk.red(
+              `SQLite inherently prevents adding constraints post-DB initialization. Drop-and-Recreate or Direct reference`
+            )
+          );
           process.exit();
         } else {
           return [
@@ -467,9 +473,13 @@ export async function _handleRelationsDiff(
   return sql;
 }
 
-async function _confirmRename(table, oldCol, newCol, type, interactive = true) {
+async function _confirmInputFromTerminal(
+  actionType,
+  options,
+  interactive = true
+) {
   /**
-   * Prompt to confirm a column rename (interactive only)
+   * Prompt function to confirm/get input from developer (interactive only)
    */
 
   if (!interactive) return false;
@@ -479,17 +489,35 @@ async function _confirmRename(table, oldCol, newCol, type, interactive = true) {
     output: process.stdout,
   });
 
-  const answer = await new Promise((resolve) => {
-    rl.question(
-      `Did you rename "${oldCol}" to "${newCol}" (a ${type}) in table "${table}"? [y/N]: `,
-      (input) => {
-        rl.close();
-        resolve(input.toLowerCase().startsWith("y"));
-      }
-    );
-  });
-
-  return answer;
+  switch (actionType) {
+    case "RENAME_COL":
+      var { table, oldCol, newCol, type } = options;
+      var answer = await new Promise((resolve) => {
+        rl.question(
+          `Did you rename "${oldCol}" to "${newCol}" (a ${type}) in table "${table}"? [y/N]: `,
+          (input) => {
+            rl.close();
+            resolve(input.toLowerCase().startsWith("y"));
+          }
+        );
+      });
+      return answer;
+    case "SQLITE_TABLE_REBUILD":
+      var { table } = options;
+      var answer = await new Promise((resolve) => {
+        rl.question(
+          `Rebuilding table "${table}" will modify its structure and migrate data. Continue? [y/N]: `,
+          (input) => {
+            rl.close();
+            resolve(input.toLowerCase().startsWith("y"));
+          }
+        );
+      });
+      return answer;
+    default:
+      rl.close();
+      return false;
+  }
 }
 
 async function _handleFieldDiff(
@@ -501,7 +529,7 @@ async function _handleFieldDiff(
   warnings = [],
   options = {}
 ) {
-  const { interactive = true } = options;
+  const { newModel } = options;
 
   const dropped = Object.keys(oldFields).filter((c) => !newFields[c]);
   const added = Object.keys(newFields).filter((c) => !oldFields[c]);
@@ -521,12 +549,15 @@ async function _handleFieldDiff(
         newNullable === oldNullable &&
         newDef.default === oldDef.default
       ) {
-        const answer = await _confirmRename(
-          table,
-          oldCol,
-          newCol,
-          newDef.type,
-          interactive
+        const answer = await _confirmInputFromTerminal(
+          "RENAME_COL",
+          {
+            table,
+            oldCol,
+            newCol,
+            type: newDef.type,
+          },
+          true
         );
 
         if (answer) {
@@ -584,55 +615,133 @@ async function _handleFieldDiff(
   }
 
   // Step 4: Detect modifications on existing columns
-  for (const [col, def] of Object.entries(newFields)) {
-    const oldDef = oldFields[col];
-    if (!oldDef || renames.some((r) => r.new === col)) continue;
-
-    const oldNullable = oldDef.nullable === true;
-    const newNullable = def.nullable === true;
-
-    // Type changed
-    if (def.type !== oldDef.type) {
-      sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${def.type};`);
-      reverseSQL.push(
-        `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${oldDef.type};`
+  const columnUniqueSchemaChanged = Object.entries(newFields).filter(
+    ([col, def]) => {
+      const oldDef = oldFields[col];
+      if (!oldDef) return false;
+      return (
+        def.type !== oldDef.type ||
+        def.default !== oldDef.default ||
+        (def.nullable === true) !== (oldDef.nullable === true)
       );
     }
+  );
 
-    // Nullability changed
-    if (newNullable !== oldNullable) {
-      sql.push(
-        `ALTER TABLE ${table} ALTER COLUMN ${col} ${
-          newNullable ? "DROP" : "SET"
-        } NOT NULL;`
-      );
-      reverseSQL.push(
-        `ALTER TABLE ${table} ALTER COLUMN ${col} ${
-          oldNullable ? "DROP" : "SET"
-        } NOT NULL;`
-      );
-    }
+  if (
+    dbType === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE &&
+    columnUniqueSchemaChanged.length > 0
+  ) {
+    for (const [col, def] of Object.entries(newFields)) {
+      const oldDef = oldFields[col];
+      if (!oldDef) {
+        continue;
+      }
 
-    // Default changed
-    if (def.default !== oldDef.default) {
-      if (def.default === undefined) {
-        sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`);
-        const oldDefVal =
-          typeof oldDef.default === "string"
-            ? `'${oldDef.default}'`
-            : oldDef.default;
-        reverseSQL.push(
-          `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${oldDefVal};`
+      if (
+        def.type !== oldDef.type ||
+        def.default !== oldDef.default ||
+        (def.nullable === true) !== (oldDef.nullable === true)
+      ) {
+        console.warn(
+          chalk.yellow(
+            `SQLite does not support ALTER COLUMN TYPE, DEFAULT, or NULL changes.`
+          )
         );
-      } else {
-        const defVal =
-          typeof def.default === "string" ? `'${def.default}'` : def.default;
+        let message = `Column: "${table}.${col}"`;
+        if (def.type !== oldDef.type) {
+          message += `\nType: [Old: ${oldDef.type}] --> [New: ${def.type}]`;
+        }
+
+        if (def.default !== oldDef.default) {
+          message += `\nDefault: [Old: ${
+            oldDef.default != undefined ? `DEFAULT ${oldDef.default}` : ""
+          }] --> [New: ${
+            def.default != undefined ? `DEFAULT ${def.default}` : ""
+          }]`;
+        }
+
+        if ((def.nullable === true) !== (oldDef.nullable === true)) {
+          message += `\nNull Status: [Old: ${
+            oldDef.nullable === true ? `` : "NOT NULL"
+          }] --> [New: ${def.nullable === true ? "" : "NOT NULL"}]`;
+        }
+
+        console.warn(chalk.yellow(message));
+
+        const answer = await _confirmInputFromTerminal(
+          "SQLITE_TABLE_REBUILD",
+          {
+            table,
+          },
+          true
+        );
+
+        if (!answer) process.exit();
+
+        await rebuildTableForSqlite(
+          table,
+          oldFields,
+          newFields,
+          newModel,
+          renames,
+          _generateCreateTableSQL,
+          sql,
+          reverseSQL,
+          warnings
+        );
+      }
+    }
+  } else {
+    for (const [col, def] of Object.entries(newFields)) {
+      const oldDef = oldFields[col];
+      if (!oldDef || renames.some((r) => r.new === col)) continue;
+
+      const oldNullable = oldDef.nullable === true;
+      const newNullable = def.nullable === true;
+
+      // Type changed
+      if (def.type !== oldDef.type) {
+        sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${def.type};`);
+        reverseSQL.push(
+          `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${oldDef.type};`
+        );
+      }
+
+      // Nullability changed
+      if (newNullable !== oldNullable) {
         sql.push(
-          `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${defVal};`
+          `ALTER TABLE ${table} ALTER COLUMN ${col} ${
+            newNullable ? "DROP" : "SET"
+          } NOT NULL;`
         );
         reverseSQL.push(
-          `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`
+          `ALTER TABLE ${table} ALTER COLUMN ${col} ${
+            oldNullable ? "DROP" : "SET"
+          } NOT NULL;`
         );
+      }
+
+      // Default changed
+      if (def.default !== oldDef.default) {
+        if (def.default === undefined) {
+          sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`);
+          const oldDefVal =
+            typeof oldDef.default === "string"
+              ? `'${oldDef.default}'`
+              : oldDef.default;
+          reverseSQL.push(
+            `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${oldDefVal};`
+          );
+        } else {
+          const defVal =
+            typeof def.default === "string" ? `'${def.default}'` : def.default;
+          sql.push(
+            `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${defVal};`
+          );
+          reverseSQL.push(
+            `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`
+          );
+        }
       }
     }
   }
@@ -1009,14 +1118,16 @@ export function _generateCreateTableSQL(
     ",\n  "
   )}\n);`;
 
+  const dropTableSQL = `DROP TABLE IF EXISTS ${
+    newModel.meta?.tableName || newModel.name
+  };`;
+
   if (!leanSQLBuild) {
     sql.push(tableSQL);
-    reverseSQL.push(
-      `DROP TABLE IF EXISTS ${newModel.meta?.tableName || newModel.name};`
-    );
+    reverseSQL.push(dropTableSQL);
   }
 
-  return tableSQL;
+  return [tableSQL, dropTableSQL];
 }
 
 export async function diffSchemas(oldSchema, newSchema) {
@@ -1058,7 +1169,8 @@ export async function diffSchemas(oldSchema, newSchema) {
         newModel.fields,
         sql,
         reverseSQL,
-        warnings
+        warnings,
+        { newModel }
       );
     }
 

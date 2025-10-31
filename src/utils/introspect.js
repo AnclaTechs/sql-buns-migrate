@@ -11,6 +11,8 @@ import {
   extractSchemas,
   normalizeSchemasForChecksum,
 } from "./extractSchema.js";
+import { modelDataToJSON } from "./serializeModelToJson.js";
+import { loadModels } from "./loadModels.js";
 
 const pkgPath = path.join(process.cwd(), "package.json");
 const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
@@ -128,7 +130,14 @@ export async function inspectdb() {
         });
       }
 
-      schema[table] = { ...model, relations: {} };
+      const tableObj = {
+        ...model,
+        relations: {},
+      };
+
+      tableObj.toJSON = modelDataToJSON.bind(tableObj);
+
+      schema[table] = tableObj;
     }
 
     // Step 2: Build only parent-side relations
@@ -160,7 +169,8 @@ export async function inspectdb() {
     // Create baseline migration
     if (!fs.existsSync(MIGRATIONS_DIR)) fs.mkdirSync(MIGRATIONS_DIR);
 
-    const currentSchema = extractSchemas(schema);
+    const models = await loadModels();
+    const currentSchema = extractSchemas(models);
     const { oldFiltered, currentFiltered } = normalizeSchemasForChecksum(
       {},
       currentSchema
@@ -199,33 +209,72 @@ async function introspectTable(client, dbType, table) {
 
   if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES) {
     const res = await client.query(`
-      SELECT column_name, data_type, is_nullable, column_default
-      FROM information_schema.columns
-      WHERE table_schema = 'public' AND table_name = '${table}';
+      SELECT
+        c.column_name,
+        c.data_type,
+        c.is_nullable,
+        c.column_default,
+        (SELECT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu
+            ON kcu.constraint_name = tc.constraint_name
+          WHERE tc.table_name = c.table_name
+            AND tc.constraint_type = 'PRIMARY KEY'
+            AND kcu.column_name = c.column_name
+        )) AS is_primary
+      FROM information_schema.columns c
+      WHERE c.table_schema = 'public' AND c.table_name = '${table}';
     `);
+
     for (const col of res.rows) {
+      const isSerial =
+        col.column_default &&
+        /nextval\('.*_seq'::regclass\)/.test(col.column_default);
+
       fields[col.column_name] = {
         type: mapPgType(col.data_type),
-        required: col.is_nullable === "NO",
+        nullable: !(col.is_nullable === "NO"),
         default: col.column_default || undefined,
+        primaryKey: col.is_primary,
+        autoIncrement: isSerial,
+        // autoIncrementKeyword: isSerial ? "SERIAL" : undefined,
       };
     }
   } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL) {
+    // using DESCRIBE
     const [rows] = await client.query(`DESCRIBE \`${table}\`;`);
     for (const col of rows) {
       fields[col.Field] = {
         type: mapMySQLType(col.Type),
-        required: col.Null === "NO",
+        nullable: !(col.Null === "NO"),
         default: col.Default || undefined,
+        primaryKey: col.Key === "PRI",
+        autoIncrement: col.Extra.includes("auto_increment"),
+        // autoIncrementKeyword: col.Extra.includes("auto_increment")
+        //   ? "AUTO_INCREMENT"
+        //   : undefined,
       };
     }
   } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
     const res = await client.all(`PRAGMA table_info(${table});`);
+
+    // SQLite auto-increment detection requires checking sqlite_master
+    const tableDef = await client.get(
+      `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`,
+      [table]
+    );
+    const createSQL = tableDef?.sql || "";
+
     for (const col of res) {
+      const isAutoInc = /AUTOINCREMENT/i.test(createSQL) && col.pk === 1;
+
       fields[col.name] = {
         type: mapSQLiteType(col.type),
-        required: col.notnull === 1,
+        nullable: !(col.notnull === 1),
         default: col.dflt_value || undefined,
+        primaryKey: col.pk === 1,
+        autoIncrement: isAutoInc,
+        // autoIncrementKeyword: isAutoInc ? "AUTOINCREMENT" : undefined,
       };
     }
   }
@@ -424,8 +473,19 @@ function buildModelFile(schema) {
       def.name
     }", {\n`;
     for (const [col, info] of Object.entries(def.fields)) {
-      file += `  ${col}: { type: Fields.${info.type}, required: ${info.required}`;
-      if (info.default) file += `, default: "${info.default}"`;
+      file += `  ${col}: { type: Fields.${info.type}${
+        info.nullable ? ", nullable: true" : ""
+      }`;
+      if (info.primaryKey) {
+        file += `, primaryKey: true`;
+      }
+      if (info.autoIncrement) {
+        file += `, autoIncrement: true`;
+      }
+      if (info.default) {
+        const strippedDefault = info.default.replace(/^["']+|["']+$/g, "");
+        file += `, default: "${strippedDefault}"`;
+      }
       file += " },\n";
     }
     file += "}, {\n";

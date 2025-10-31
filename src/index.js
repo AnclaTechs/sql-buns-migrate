@@ -292,7 +292,6 @@ export async function migrateDown() {
       return;
     }
 
-    console.log({ lastApplied });
     const lastFile = lastApplied.name.replace(".sql", ".js");
     const rollbackPath = path.join(MIGRATIONS_DIR, lastFile);
 
