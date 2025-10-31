@@ -22,14 +22,6 @@ CREATE TRIGGER trg_users_insert_after_1
   BEGIN
     INSERT INTO audit_logs (message, created_at) VALUES ( 'New user created: ' || NEW.id, CURRENT_TIMESTAMP );
   END;
-CREATE TRIGGER trg_users_update_after_0
-  AFTER UPDATE
-  ON users
-  FOR EACH ROW
-  WHEN (OLD.level <> NEW.level)
-  BEGIN
-    INSERT INTO user_level_history ( user_id, old_level, new_level, changed_at ) VALUES ( NEW.id, OLD.level, NEW.level, CURRENT_TIMESTAMP );
-  END;
 CREATE TRIGGER trg_users_update_after_1
   AFTER UPDATE
   ON users
@@ -37,6 +29,14 @@ CREATE TRIGGER trg_users_update_after_1
   WHEN (OLD.bonus_balance <> NEW.bonus_balance)
   BEGIN
     INSERT INTO audit_logs (message, created_at) VALUES ( 'Bonus changed, from ' || OLD.bonus_balance || ' to ' || NEW.bonus_balance, CURRENT_TIMESTAMP );
+  END;
+CREATE TRIGGER trg_users_update_after_0
+  AFTER UPDATE
+  ON users
+  FOR EACH ROW
+  WHEN (OLD.level <> NEW.level)
+  BEGIN
+    INSERT INTO user_level_history ( user_id, old_level, new_level, changed_at ) VALUES ( NEW.id, OLD.level, NEW.level, CURRENT_TIMESTAMP );
   END;
 CREATE TABLE IF NOT EXISTS "games" (
   id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
