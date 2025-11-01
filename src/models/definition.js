@@ -187,6 +187,10 @@ export const DateTimeField = (options = {}) => {
   return _createField("DATETIME", options, { default: "CURRENT_TIMESTAMP" });
 };
 
+export const TimeField = (options = {}) => {
+  return _createField("TIME", options);
+};
+
 export const BlobField = (options = {}) => {
   return _createField("BLOB", options);
 };
@@ -370,8 +374,10 @@ export const models = {
   FloatingPointField,
   CharField,
   TextField,
+  EnumField,
   DateField,
   DateTimeField,
+  TimeField,
   BlobField,
   BooleanField,
   UUIDField,

@@ -406,6 +406,7 @@ export function defineModel<
     ) => CustomEnumFieldDefinition;
     DateField: (options?: Partial<FieldDefinition>) => FieldDefinition;
     DateTimeField: (options?: Partial<FieldDefinition>) => FieldDefinition;
+    TimeField: (options?: Partial<FieldDefinition>) => FieldDefinition;
     BlobField: (options?: Partial<FieldDefinition>) => FieldDefinition;
     BooleanField: (options?: Partial<FieldDefinition>) => FieldDefinition;
     UUIDField: (options?: Partial<FieldDefinition>) => FieldDefinition;

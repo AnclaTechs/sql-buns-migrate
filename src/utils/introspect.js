@@ -107,7 +107,7 @@ export async function inspectdb() {
 
     console.log(`🧱 Found ${tables.length} tables: ${tables.join(", ")}`);
 
-    // Step 1: Gather model schemas
+    // Gather model schemas
     const schema = {};
     const dependencies = []; // store foreign key relationships temporarily
 
@@ -140,7 +140,7 @@ export async function inspectdb() {
       schema[table] = tableObj;
     }
 
-    // Step 2: Build only parent-side relations
+    // Build specifically from parent-side relations
     for (const dep of dependencies) {
       if (!schema[dep.parent]) continue;
       const parentRelations = schema[dep.parent].relations;
@@ -154,7 +154,6 @@ export async function inspectdb() {
       };
     }
 
-    // Step 3: Continue your original flow
     const modelFile = buildModelFile(schema);
 
     const proceed = await confirmOverwrite(MODELS_PATH);
@@ -226,56 +225,94 @@ async function introspectTable(client, dbType, table) {
       WHERE c.table_schema = 'public' AND c.table_name = '${table}';
     `);
 
+    // Detect enums
+    const enumRes = await client.query(`
+      SELECT
+        c.column_name,
+        e.enumlabel AS enum_label
+      FROM information_schema.columns c
+      JOIN pg_type t ON t.typname = c.udt_name
+      JOIN pg_enum e ON e.enumtypid = t.oid
+      WHERE c.table_schema = 'public' AND c.table_name = '${table}'
+      ORDER BY c.column_name, e.enumsortorder;
+    `);
+
+    const enumMap = {};
+    for (const row of enumRes.rows) {
+      if (!enumMap[row.column_name]) enumMap[row.column_name] = [];
+      enumMap[row.column_name].push(row.enum_label);
+    }
+
     for (const col of res.rows) {
       const isSerial =
         col.column_default &&
         /nextval\('.*_seq'::regclass\)/.test(col.column_default);
 
+      const isEnum = !!enumMap[col.column_name];
+
       fields[col.column_name] = {
-        type: mapPgType(col.data_type),
-        nullable: !(col.is_nullable === "NO"),
+        type: isEnum ? "EnumField" : mapPgType(col.data_type),
+        choices: isEnum ? enumMap[col.column_name] : undefined,
+        nullable: col.is_nullable !== "NO",
         default: col.column_default || undefined,
         primaryKey: col.is_primary,
         autoIncrement: isSerial,
-        // autoIncrementKeyword: isSerial ? "SERIAL" : undefined,
       };
     }
   } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL) {
-    // using DESCRIBE
     const [rows] = await client.query(`DESCRIBE \`${table}\`;`);
+
     for (const col of rows) {
+      const match = col.Type.match(/^enum\((.+)\)$/i);
+      const choices = match
+        ? match[1].split(",").map((v) => v.trim().replace(/^'|'$/g, ""))
+        : undefined;
+
       fields[col.Field] = {
-        type: mapMySQLType(col.Type),
-        nullable: !(col.Null === "NO"),
+        type: choices ? "EnumField" : mapMySQLType(col.Type),
+        choices,
+        nullable: col.Null !== "NO",
         default: col.Default || undefined,
         primaryKey: col.Key === "PRI",
         autoIncrement: col.Extra.includes("auto_increment"),
-        // autoIncrementKeyword: col.Extra.includes("auto_increment")
-        //   ? "AUTO_INCREMENT"
-        //   : undefined,
       };
     }
   } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
     const res = await client.all(`PRAGMA table_info(${table});`);
-
-    // SQLite auto-increment detection requires checking sqlite_master
     const tableDef = await client.get(
       `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`,
       [table]
     );
+
     const createSQL = tableDef?.sql || "";
 
     for (const col of res) {
       const isAutoInc = /AUTOINCREMENT/i.test(createSQL) && col.pk === 1;
-
       fields[col.name] = {
         type: mapSQLiteType(col.type),
-        nullable: !(col.notnull === 1),
+        nullable: col.notnull !== 1,
         default: col.dflt_value || undefined,
         primaryKey: col.pk === 1,
         autoIncrement: isAutoInc,
-        // autoIncrementKeyword: isAutoInc ? "AUTOINCREMENT" : undefined,
       };
+    }
+
+    // Detect CHECK enums
+    const checkMatches = [
+      ...createSQL.matchAll(
+        /["'`]?(\w+)["'`]?\s+(?:TEXT|CHAR|VARCHAR)\s+CHECK\s*\(\s*\1\s+IN\s*\(([^)]+)\)\s*\)/gi
+      ),
+    ];
+
+    for (const [, colName, valuesRaw] of checkMatches) {
+      const choices = valuesRaw
+        .split(",")
+        .map((v) => v.trim().replace(/^'|'$/g, ""));
+
+      if (fields[colName]) {
+        fields[colName].type = "EnumField";
+        fields[colName].choices = choices;
+      }
     }
   }
 
@@ -433,33 +470,139 @@ async function isColumnUnique(client, dbType, table, column) {
  * Map DB-specific data types to your internal Field types
  */
 function mapPgType(type) {
-  if (type.includes("integer")) return "IntegerField";
-  if (type.includes("numeric")) return "DecimalField";
-  if (type.includes("text")) return "TextField";
-  if (type.includes("character")) return "CharField";
-  if (type.includes("boolean")) return "BooleanField";
-  if (type.includes("timestamp")) return "DateTimeField";
-  if (type.includes("date")) return "DateField";
-  return "TextField";
+  const t = type.toLowerCase();
+
+  switch (true) {
+    // Numbers
+    case /int|serial|smallint|bigint/.test(t):
+      return "IntegerField";
+    case /numeric|decimal/.test(t):
+      return "DecimalField";
+    case /real|double\s+precision|float/.test(t):
+      return "FloatingPointField";
+
+    // Text
+    case /char|character varying|varchar/.test(t):
+      return "CharField";
+    case /text|json|jsonb|xml/.test(t):
+      return "TextField";
+
+    // Boolean
+    case /bool/.test(t):
+      return "BooleanField";
+
+    // Temporal
+    case /timestamp/.test(t):
+      return "DateTimeField";
+    case /\btime(?!stamp)\b/.test(t):
+      return "TimeField";
+    case /\bdate\b/.test(t):
+      return "DateField";
+
+    // Binary / UUID
+    case /uuid/.test(t):
+      return "UUIDField";
+    case /bytea/.test(t):
+      return "BlobField";
+
+    // Default
+    default:
+      return "TextField";
+  }
 }
 
 function mapMySQLType(type) {
-  if (type.includes("int")) return "IntegerField";
-  if (type.includes("decimal")) return "DecimalField";
-  if (type.includes("text")) return "TextField";
-  if (type.includes("varchar")) return "CharField";
-  if (type.includes("bool")) return "BooleanField";
-  if (type.includes("datetime")) return "DateTimeField";
-  return "TextField";
-}
+  const t = type.toLowerCase();
 
+  switch (true) {
+    // Integers
+    case /\b(int|tinyint|smallint|mediumint|bigint)\b/.test(t):
+      return "IntegerField";
+
+    // Decimals / Numerics
+    case /\b(decimal|numeric)\b/.test(t):
+      return "DecimalField";
+
+    // Floating point
+    case /\b(float|double|real)\b/.test(t):
+      return "FloatingPointField";
+
+    // Boolean (MySQL represents BOOLEAN as TINYINT(1))
+    case /\bbool|boolean|tinyint\(1\)\b/.test(t):
+      return "BooleanField";
+
+    // Character types
+    case /\b(char|varchar)\b/.test(t):
+      return "CharField";
+
+    // Text types
+    case /\b(text|tinytext|mediumtext|longtext)\b/.test(t):
+      return "TextField";
+
+    // Temporal types
+    case /\b(datetime|timestamp)\b/.test(t):
+      return "DateTimeField";
+    case /\bdate\b/.test(t):
+      return "DateField";
+    case /\btime\b/.test(t):
+      return "TimeField";
+
+    // Binary types
+    case /\b(blob|tinyblob|mediumblob|longblob|binary|varbinary|bit)\b/.test(t):
+      return "BlobField";
+
+    // JSON
+    case /\bjson\b/.test(t):
+      return "JsonField";
+
+    // Enumerations
+    case /\b(enum|set)\b/.test(t):
+      return "EnumField";
+
+    // UUID (commonly stored as CHAR(36) or BINARY(16))
+    case /\buuid\b/.test(t):
+    case /\bchar\(36\)\b/.test(t):
+    case /\bbinary\(16\)\b/.test(t):
+      return "UUIDField";
+
+    // Default fallback
+    default:
+      return "TextField";
+  }
+}
 function mapSQLiteType(type) {
   const t = type.toLowerCase();
-  if (t.includes("int")) return "IntegerField";
-  if (t.includes("text")) return "TextField";
-  if (t.includes("real")) return "DecimalField";
-  if (t.includes("bool")) return "BooleanField";
-  return "TextField";
+
+  switch (true) {
+    case t.includes("int"):
+      return "IntegerField";
+
+    case t.includes("real") || t.includes("floa") || t.includes("doub"):
+      return "FloatingPointField";
+
+    case t.includes("bool"):
+      return "BooleanField";
+
+    case t.includes("date") && !t.includes("datetime"):
+      return "DateField";
+
+    case t.includes("datetime") ||
+      t.includes("time") ||
+      t.includes("timestamp"):
+      return "DateTimeField";
+
+    case t.includes("text") || t.includes("char") || t.includes("clob"):
+      return "TextField";
+
+    case t.includes("blob"):
+      return "BlobField";
+
+    case t.includes("json"):
+      return "JsonField";
+
+    default:
+      return "TextField";
+  }
 }
 
 /**
@@ -481,6 +624,9 @@ function buildModelFile(schema) {
       }
       if (info.autoIncrement) {
         file += `, autoIncrement: true`;
+      }
+      if (info.choices) {
+        file += `, choices: ${JSON.stringify(info.choices)}`;
       }
       if (info.default) {
         const strippedDefault = info.default.replace(/^["']+|["']+$/g, "");

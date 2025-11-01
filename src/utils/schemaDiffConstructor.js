@@ -535,7 +535,7 @@ async function _handleFieldDiff(
   const added = Object.keys(newFields).filter((c) => !oldFields[c]);
   const renames = [];
 
-  // Step 1: Detect potential renames
+  // Detect potential renames
   for (const newCol of [...added]) {
     const newDef = newFields[newCol];
     for (const oldCol of [...dropped]) {
@@ -576,7 +576,7 @@ async function _handleFieldDiff(
     }
   }
 
-  // Step 2: Drop remaining columns
+  // Drop columns in dropped
   for (const col of dropped) {
     sql.push(`ALTER TABLE ${table} DROP COLUMN ${col};`);
     const oldDef = oldFields[col];
@@ -591,7 +591,7 @@ async function _handleFieldDiff(
     );
   }
 
-  // Step 3: Add new columns
+  // Add new columns
   for (const col of added) {
     const def = newFields[col];
     const defVal =
@@ -614,7 +614,7 @@ async function _handleFieldDiff(
     reverseSQL.push(`ALTER TABLE ${table} DROP COLUMN ${col};`);
   }
 
-  // Step 4: Detect modifications on existing columns
+  // Detect modifications on existing columns
   const columnUniqueSchemaChanged = Object.entries(newFields).filter(
     ([col, def]) => {
       const oldDef = oldFields[col];
