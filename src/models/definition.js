@@ -85,7 +85,19 @@ export const FloatingPointField = (options = {}) => {
 };
 
 export const CharField = (options = {}) => {
-  return _createField("VARCHAR", options, { maxLength: 255 });
+  const DEFAULT_MAX_LENGTH = 255;
+  const maxLength =
+    typeof options.maxLength === "number" && options.maxLength > 0
+      ? options.maxLength
+      : DEFAULT_MAX_LENGTH;
+
+  const type = `VARCHAR(${maxLength})`;
+
+  return _createField(
+    type,
+    { ...options, maxLength },
+    { maxLength: DEFAULT_MAX_LENGTH }
+  );
 };
 
 export const TextField = (options = {}) => {

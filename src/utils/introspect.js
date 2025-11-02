@@ -17,6 +17,7 @@ import { loadModels } from "./loadModels.js";
 const pkgPath = path.join(process.cwd(), "package.json");
 const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
 const userPath = pkg?.sqlBuns?.modelsPath;
+const CHARFIELD_STRING = "CharField";
 
 const defaultPath = path.join(process.cwd(), "database", "models", "index.js");
 
@@ -257,6 +258,7 @@ async function introspectTable(client, dbType, table) {
         default: col.column_default || undefined,
         primaryKey: col.is_primary,
         autoIncrement: isSerial,
+        maxLength: col.character_maximum_length || undefined,
       };
     }
   } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL) {
@@ -268,6 +270,11 @@ async function introspectTable(client, dbType, table) {
         ? match[1].split(",").map((v) => v.trim().replace(/^'|'$/g, ""))
         : undefined;
 
+      const maxLengthMatch = col.Type.match(/\((\d+)\)/);
+      const maxLength = maxLengthMatch
+        ? parseInt(maxLengthMatch[1])
+        : undefined;
+
       fields[col.Field] = {
         type: choices ? "EnumField" : mapMySQLType(col.Type),
         choices,
@@ -275,6 +282,7 @@ async function introspectTable(client, dbType, table) {
         default: col.Default || undefined,
         primaryKey: col.Key === "PRI",
         autoIncrement: col.Extra.includes("auto_increment"),
+        maxLength,
       };
     }
   } else if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
@@ -288,12 +296,18 @@ async function introspectTable(client, dbType, table) {
 
     for (const col of res) {
       const isAutoInc = /AUTOINCREMENT/i.test(createSQL) && col.pk === 1;
+      const maxLengthMatch = col.type.match(/\((\d+)\)/);
+      const maxLength = maxLengthMatch
+        ? parseInt(maxLengthMatch[1])
+        : undefined;
+
       fields[col.name] = {
         type: mapSQLiteType(col.type),
         nullable: col.notnull !== 1,
         default: col.dflt_value || undefined,
         primaryKey: col.pk === 1,
         autoIncrement: isAutoInc,
+        maxLength,
       };
     }
 
@@ -505,9 +519,9 @@ function mapPgType(type) {
     case /bytea/.test(t):
       return "BlobField";
 
-    // Default
+    // Default VARCHAR(255)
     default:
-      return "TextField";
+      return "CharField";
   }
 }
 
@@ -565,9 +579,9 @@ function mapMySQLType(type) {
     case /\bbinary\(16\)\b/.test(t):
       return "UUIDField";
 
-    // Default fallback
+    // Default fallback VARCHAR(255)
     default:
-      return "TextField";
+      return "CharField";
   }
 }
 function mapSQLiteType(type) {
@@ -591,8 +605,11 @@ function mapSQLiteType(type) {
       t.includes("timestamp"):
       return "DateTimeField";
 
-    case t.includes("text") || t.includes("char") || t.includes("clob"):
+    case t.includes("text"):
       return "TextField";
+
+    case t.includes("char") || t.includes("varchar") || t.includes("clob"):
+      return "CharField";
 
     case t.includes("blob"):
       return "BlobField";
@@ -600,8 +617,9 @@ function mapSQLiteType(type) {
     case t.includes("json"):
       return "JsonField";
 
+    // Default VARCHAR(255)
     default:
-      return "TextField";
+      return "CharField";
   }
 }
 
@@ -617,8 +635,10 @@ function buildModelFile(schema) {
     }", {\n`;
     for (const [col, info] of Object.entries(def.fields)) {
       file += `  ${col}: { type: Fields.${info.type}${
-        info.nullable ? ", nullable: true" : ""
-      }`;
+        info.type === CHARFIELD_STRING && info.maxLength
+          ? `, maxLength: ${info.maxLength}`
+          : ""
+      }${info.nullable ? ", nullable: true" : ""}`;
       if (info.primaryKey) {
         file += `, primaryKey: true`;
       }
