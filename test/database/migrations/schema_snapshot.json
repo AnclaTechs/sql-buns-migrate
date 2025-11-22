@@ -1,4 +1,27 @@
 {
+  "AuditLogs": {
+    "name": "audit_logs",
+    "fields": {
+      "id": {
+        "type": "INTEGER",
+        "autoIncrement": true,
+        "primaryKey": true
+      },
+      "message": {
+        "type": "VARCHAR(255)",
+        "maxLength": 255
+      },
+      "created_at": {
+        "type": "DATETIME",
+        "default": "CURRENT_TIMESTAMP"
+      }
+    },
+    "relations": {},
+    "triggers": {},
+    "meta": {
+      "tableName": "audit_logs"
+    }
+  },
   "Users": {
     "name": "users",
     "fields": {
@@ -8,12 +31,11 @@
         "primaryKey": true
       },
       "email": {
-        "type": "VARCHAR",
-        "maxLength": 255,
-        "unique": true
+        "type": "VARCHAR(255)",
+        "maxLength": 255
       },
       "phone": {
-        "type": "VARCHAR",
+        "type": "VARCHAR(255)",
         "maxLength": 255,
         "nullable": true
       },
@@ -27,7 +49,7 @@
         "type": "INTEGER",
         "autoIncrement": false,
         "primaryKey": false,
-        "default": 0
+        "default": "0"
       },
       "level": {
         "type": "TEXT CHECK(value IN ('NOOB', 'INTERMEDIATE', 'EXPERT', 'KING', 'EMPEROR'))",
@@ -42,11 +64,8 @@
         "dialect": "sqlite"
       },
       "bonus_balance": {
-        "type": "DECIMAL",
-        "precision": 5,
-        "scale": 2,
-        "maxDigits": 5,
-        "decimalPlaces": 2
+        "type": "VARCHAR(255)",
+        "maxLength": 255
       }
     },
     "relations": {
@@ -56,41 +75,9 @@
         "foreignKey": "user_id"
       }
     },
-    "triggers": {
-      "afterInsert": {
-        "timing": "AFTER",
-        "event": "INSERT",
-        "statements": [
-          "UPDATE users SET bonus_balance = 10.00 WHERE id = NEW.id;",
-          "INSERT INTO audit_logs (message, created_at) VALUES ( 'New user created: ' || NEW.id, CURRENT_TIMESTAMP );"
-        ]
-      },
-      "afterUpdate": {
-        "timing": "AFTER",
-        "event": "UPDATE",
-        "statements": [
-          {
-            "body": "INSERT INTO user_level_history ( user_id, old_level, new_level, changed_at ) VALUES ( NEW.id, OLD.level, NEW.level, CURRENT_TIMESTAMP );",
-            "when": "WHEN OLD.level <> NEW.level;"
-          },
-          {
-            "body": "INSERT INTO audit_logs (message, created_at) VALUES ( 'Bonus changed, from ' || OLD.bonus_balance || ' to ' || NEW.bonus_balance, CURRENT_TIMESTAMP );",
-            "when": "WHEN OLD.bonus_balance <> NEW.bonus_balance;"
-          }
-        ]
-      }
-    },
+    "triggers": {},
     "meta": {
-      "tableName": "users",
-      "indexes": [
-        {
-          "fields": [
-            "email"
-          ],
-          "unique": true,
-          "name": "idx_users_email"
-        }
-      ]
+      "tableName": "users"
     }
   },
   "Games": {
@@ -117,26 +104,56 @@
       "tableName": "games"
     }
   },
-  "AuditLogs": {
-    "name": "audit_logs",
+  "SqlbunsMigrations": {
+    "name": "_sqlbuns_migrations",
     "fields": {
       "id": {
         "type": "INTEGER",
         "autoIncrement": true,
-        "primaryKey": true
+        "primaryKey": true,
+        "nullable": true
       },
-      "message": {
-        "type": "VARCHAR",
+      "name": {
+        "type": "VARCHAR(255)",
         "maxLength": 255
       },
-      "created_at": {
+      "checksum": {
+        "type": "VARCHAR(64)",
+        "maxLength": 64
+      },
+      "previous_checksum": {
+        "type": "VARCHAR(64)",
+        "maxLength": 64,
+        "nullable": true
+      },
+      "direction": {
+        "type": "VARCHAR(10)",
+        "maxLength": 10,
+        "default": "up"
+      },
+      "applied_at": {
         "type": "DATETIME",
-        "default": "CURRENT_TIMESTAMP"
+        "default": "CURRENT_TIMESTAMP",
+        "nullable": true
+      },
+      "rolled_back": {
+        "type": "INTEGER",
+        "autoIncrement": false,
+        "primaryKey": false,
+        "nullable": true,
+        "default": "0"
+      },
+      "rolled_back_at": {
+        "type": "DATETIME",
+        "default": "CURRENT_TIMESTAMP",
+        "nullable": true
       }
     },
     "relations": {},
     "triggers": {},
-    "meta": {}
+    "meta": {
+      "tableName": "_sqlbuns_migrations"
+    }
   },
   "UserLevelHistory": {
     "name": "user_level_history",
@@ -152,11 +169,11 @@
         "primaryKey": false
       },
       "old_level": {
-        "type": "VARCHAR",
+        "type": "VARCHAR(255)",
         "maxLength": 255
       },
       "new_level": {
-        "type": "VARCHAR",
+        "type": "VARCHAR(255)",
         "maxLength": 255
       },
       "changed_at": {
@@ -166,6 +183,8 @@
     },
     "relations": {},
     "triggers": {},
-    "meta": {}
+    "meta": {
+      "tableName": "user_level_history"
+    }
   }
 }
