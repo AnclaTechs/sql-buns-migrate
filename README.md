@@ -155,7 +155,7 @@ this.assertParams([
 ]);
 ```
 
-Automatically throws if validation fails.
+Automatically throws error if required validation fails.
 
 <br/>
 
