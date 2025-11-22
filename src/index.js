@@ -6,7 +6,10 @@ import { generateChecksum } from "./utils/generics.js";
 import { loadModels } from "./utils/loadModels.js";
 import { diffSchemas } from "./utils/schemaDiffConstructor.js";
 import { inspectDBForDrift } from "./utils/integrity.js";
-import { SUPPORTED_SQL_DIALECTS_TYPES } from "./utils/constants.js";
+import {
+  INITIAL_INSPECTDB_MARKER,
+  SUPPORTED_SQL_DIALECTS_TYPES,
+} from "./utils/constants.js";
 import {
   extractSchemas,
   normalizeSchemasForChecksum,
@@ -54,6 +57,16 @@ export async function createMigration(name) {
   if (currentChecksum === oldChecksum) {
     console.log("✅ No schema changes detected.");
     return;
+  }
+
+  // Assert that the migration name is not a reserved keyword
+  if (sanitizeMigrationName(name).toLowerCase() === INITIAL_INSPECTDB_MARKER) {
+    console.error(
+      `\n❌ Error: The migration name '${INITIAL_INSPECTDB_MARKER}' is reserved.\n` +
+        "This name is used internally to detect auto-generated databases.\n" +
+        "Please choose a different name.\n"
+    );
+    process.exit(1);
   }
 
   // Read all migration files in the directory
@@ -177,10 +190,19 @@ export async function migrateUp() {
      * Thus unapplied array lenght would be === 1
      * */
 
+    let content;
     const dbType = process.env.DATABASE_ENGINE;
     const schema = JSON.parse(fs.readFileSync(SNAPSHOT_FILE, "utf-8"));
     const filePath = path.join(MIGRATIONS_DIR, file);
-    const content = fs.readFileSync(filePath, "utf8");
+    if (filePath.includes(INITIAL_INSPECTDB_MARKER)) {
+      // Special case: `INITIAL_INSPECTDB_MARKER` migration is a marker file only.
+      // It indicates that the database was created via `inspectdb` and should not be re-applied,
+      // as doing so would lead to unintended overwrite issues.
+      // Its content is intentionally ignored. Some sort of Fake migration pass :check :)
+      content = "";
+    } else {
+      content = fs.readFileSync(filePath, "utf8");
+    }
     const checksum = generateChecksum(schema);
 
     console.log(chalk.cyan(`\n▶ Running migration: ${file}`));
@@ -259,7 +281,7 @@ export async function migrateUp() {
 }
 
 export async function migrateDown() {
-  console.log("🔁 Reverting last migration...");
+  console.log("\nReverting last migration...");
 
   const dbType = process.env.DATABASE_ENGINE;
   let connection = null;
@@ -307,7 +329,7 @@ export async function migrateDown() {
       return;
     }
 
-    console.log(`⏪ Running rollback for ${lastFile}...`);
+    console.log(`\nRunning rollback for ${lastFile}...`);
     await rollbackModule.down(connection || pool);
 
     // Mark migration as reverted

@@ -4,3 +4,4 @@ export const SUPPORTED_SQL_DIALECTS_TYPES = {
   SQLITE: "sqlite",
   MYSQL: "mysql",
 };
+export const INITIAL_INSPECTDB_MARKER = "0000_initial_inspectdb";
