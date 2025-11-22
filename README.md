@@ -141,7 +141,7 @@ const Users = defineModel(
 
 
 
-## 🔒 `this.assertParams`
+### 🔒 `this.assertParams`
 
 A lightweight runtime validator for your model methods.
 Allowing you to validate arguments in either object or array form:
