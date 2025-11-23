@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import chalk from "chalk";
 import readline from "readline";
 import { pool } from "@anclatechs/sql-buns";
 import { generateChecksum } from "./generics.js";
@@ -179,7 +180,7 @@ export async function inspectdb() {
       currentSchema
     );
 
-    const changes = await diffSchemas({}, currentSchema);
+    const changes = await diffSchemas({}, currentSchema, { inspectDB: true });
 
     // if (changes.warnings.length > 0) {
     //   console.log("Warnings:");
@@ -235,7 +236,12 @@ export async function down() {
 
     await recordBaselineMigration(connection || pool, checksum, filename);
 
-    console.log("✅ Inspectdb completed successfully.");
+    console.log("✅ Inspectdb completed successfully.\n");
+    console.log(
+      chalk.yellow(
+        "Note: Consider reviewing the generated models and snapshot to ensure everything reflects the current state of your database before running the `buns-migrate up` command."
+      )
+    );
   } catch (err) {
     console.error("❌ Inspectdb failed:", err.message);
   } finally {

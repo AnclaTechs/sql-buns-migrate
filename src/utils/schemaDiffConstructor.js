@@ -282,7 +282,8 @@ export async function _handleRelationsDiff(
   sql = [],
   reverseSQL = [],
   deferedSql = [],
-  pendingFKConstraints = []
+  pendingFKConstraints = [],
+  isDbInspection
 ) {
   const pendingRelations = [];
 
@@ -352,11 +353,11 @@ export async function _handleRelationsDiff(
     } else if (rel.type === "hasOne" || rel.type === "hasMany") {
       const tableExists = await _tableExistsInDb(rel.model);
       if (tableExists) {
-        if (dbType == SUPPORTED_SQL_DIALECTS_TYPES.SQLITE) {
+        if (dbType == SUPPORTED_SQL_DIALECTS_TYPES.SQLITE && !isDbInspection) {
           // THROW ERROR due to SQLite limitation
           console.error(
             chalk.red(
-              `SQLite inherently prevents adding constraints post-DB initialization. Drop-and-Recreate or Direct reference`
+              `SQLite inherently prevents adding constraints post-DB initialization. Drop-and-Recreate or direct reference`
             )
           );
           process.exit();
@@ -1130,7 +1131,11 @@ export function _generateCreateTableSQL(
   return [tableSQL, dropTableSQL];
 }
 
-export async function diffSchemas(oldSchema, newSchema) {
+export async function diffSchemas(
+  oldSchema,
+  newSchema,
+  options = { inspectDB: false }
+) {
   const sql = [];
   const reverseSQL = [];
   const warnings = [];
@@ -1184,7 +1189,8 @@ export async function diffSchemas(oldSchema, newSchema) {
       sql,
       reverseSQL,
       deferredRelationSqlDiff,
-      pendingFKConstraints
+      pendingFKConstraints,
+      options.inspectDB
     );
 
     // Handle triggers

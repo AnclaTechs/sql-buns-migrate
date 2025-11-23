@@ -279,7 +279,11 @@ The framework auto-manages a tracking table:
   ⚙ .env
 
 ```
+---
+### 📖 Troubleshooting Tips:
 
+For detailed guidance on inspecting and repairing migrations, see [Troubleshooting Guide.](./TROUBLESHOOTING.md)
+It explains how to safely adjust snapshot files, migration SQL files, and handle edge cases.
 <br/>
 <br/>
 
