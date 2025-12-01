@@ -189,7 +189,7 @@ async function _validateTriggerBody(body, allNewModels) {
   return { action: "createNow" };
 }
 
-function _handleMetaDiff(
+async function _handleMetaDiff(
   table,
   oldMeta = {},
   newMeta = {},
@@ -939,7 +939,7 @@ async function _handleTriggersDiff(
   return sql;
 }
 
-export function _generateCreateTableSQL(
+export async function _generateCreateTableSQL(
   table,
   newModel,
   sql = [],
@@ -1154,7 +1154,7 @@ export async function diffSchemas(
     // If table doesn’t exist in old schema, create it
     if (Object.entries(oldModel).length == 0) {
       tableIsNew = true;
-      _generateCreateTableSQL(
+      await _generateCreateTableSQL(
         table,
         newModel,
         sql,
@@ -1164,7 +1164,7 @@ export async function diffSchemas(
     }
 
     // Handle meta-level changes (table rename, comment, indexes)
-    _handleMetaDiff(table, oldModel.meta, newModel.meta, sql, reverseSQL);
+    await _handleMetaDiff(table, oldModel.meta, newModel.meta, sql, reverseSQL);
 
     if (!tableIsNew) {
       // Handle fields (columns)
@@ -1213,7 +1213,7 @@ export async function diffSchemas(
 
       if (!existsInNew) {
         sql.push(`DROP TABLE IF EXISTS ${table};`);
-        const [reverseTableSQL, _] = _generateCreateTableSQL(
+        const [reverseTableSQL, _] = await _generateCreateTableSQL(
           table,
           oldModel,
           [],
