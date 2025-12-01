@@ -362,16 +362,34 @@ export async function _handleRelationsDiff(
           );
           process.exit();
         } else {
-          return [
-            [
-              `ALTER TABLE ${rel.model} ADD CONSTRAINT fk_${rel.model}_${rel.foreignKey} FOREIGN KEY (${rel.foreignKey}) REFERENCES ${baseTable}(id);`,
-              `CREATE INDEX IF NOT EXISTS idx_${rel.model}_${rel.foreignKey} ON ${rel.model} (${rel.foreignKey});`,
-            ],
-            [
-              `DROP INDEX IF EXISTS idx_${rel.model}_${rel.foreignKey};`,
-              `ALTER TABLE ${rel.model} DROP CONSTRAINT fk_${rel.model}_${rel.foreignKey};`,
-            ],
-          ];
+          if (isDbInspection) {
+            deferedSql.push(
+              `ALTER TABLE ${rel.model} ADD CONSTRAINT fk_${rel.model}_${rel.foreignKey} FOREIGN KEY (${rel.foreignKey}) REFERENCES ${baseTable}(id);`
+            );
+            deferedSql.push(
+              `CREATE INDEX IF NOT EXISTS idx_${rel.model}_${rel.foreignKey} ON ${rel.model} (${rel.foreignKey});`
+            );
+
+            deferedSql.push(
+              `DROP INDEX IF EXISTS idx_${rel.model}_${rel.foreignKey};`
+            );
+
+            deferedSql.push(
+              `ALTER TABLE ${rel.model} DROP CONSTRAINT fk_${rel.model}_${rel.foreignKey};`
+            );
+            return [[], []];
+          } else {
+            return [
+              [
+                `ALTER TABLE ${rel.model} ADD CONSTRAINT fk_${rel.model}_${rel.foreignKey} FOREIGN KEY (${rel.foreignKey}) REFERENCES ${baseTable}(id);`,
+                `CREATE INDEX IF NOT EXISTS idx_${rel.model}_${rel.foreignKey} ON ${rel.model} (${rel.foreignKey});`,
+              ],
+              [
+                `DROP INDEX IF EXISTS idx_${rel.model}_${rel.foreignKey};`,
+                `ALTER TABLE ${rel.model} DROP CONSTRAINT fk_${rel.model}_${rel.foreignKey};`,
+              ],
+            ];
+          }
         }
       } else {
         // Table doesn't exist yet, Check newModelsObject
@@ -1227,7 +1245,14 @@ export async function diffSchemas(
     }
   }
 
-  sql.push(...deferredRelationSqlDiff);
+  const seenStatement = new Set();
+  for (const statement of deferredRelationSqlDiff) {
+    const normalized = statement.trim();
+    if (normalized && !seenStatement.has(normalized)) {
+      seenStatement.add(normalized);
+      sql.push(normalized);
+    }
+  }
 
   return { sql, reverseSQL, warnings };
 }
