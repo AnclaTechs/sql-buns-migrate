@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "dotenv/config.js";
 import { Command } from "commander";
 import chalk from "chalk";
 import { migrateUp, migrateDown, createMigration } from "../src/index.js";
