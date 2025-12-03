@@ -143,7 +143,7 @@ export async function down() {
 /**
  * Run all unapplied migrations
  */
-export async function migrateUp() {
+export async function migrateUp({ includeInitial = false }) {
   console.log(chalk.cyan("🔍 Checking for unapplied migrations..."));
 
   // Get all migration files
@@ -194,11 +194,15 @@ export async function migrateUp() {
     const dbType = process.env.DATABASE_ENGINE;
     const schema = JSON.parse(fs.readFileSync(SNAPSHOT_FILE, "utf-8"));
     const filePath = path.join(MIGRATIONS_DIR, file);
-    if (filePath.includes(INITIAL_INSPECTDB_MARKER)) {
+    if (
+      filePath.includes(INITIAL_INSPECTDB_MARKER) &&
+      includeInitial == false
+    ) {
       // Special case: `INITIAL_INSPECTDB_MARKER` migration is a marker file only.
       // It indicates that the database was created via `inspectdb` and should not be re-applied,
       // as doing so would lead to unintended overwrite issues.
       // Its content is intentionally ignored. Some sort of Fake migration pass :check :)
+      // Unless specified by the includeInitial Flage
       content = "";
     } else {
       content = fs.readFileSync(filePath, "utf8");

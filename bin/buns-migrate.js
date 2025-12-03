@@ -37,8 +37,12 @@ const program = new Command();
     program
       .command("up")
       .description("Run all pending migrations")
-      .action(async () => {
-        await migrateUp();
+      .option(
+        "--include-initial",
+        "Run migration along with any inital inspectdb migration file(s) available"
+      )
+      .action(async (options) => {
+        await migrateUp({ includeInitial: options.includeInitial || false });
       });
 
     program
