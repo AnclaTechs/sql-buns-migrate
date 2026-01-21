@@ -3,6 +3,7 @@ import chalk from "chalk";
 import readline from "readline";
 import { SUPPORTED_SQL_DIALECTS_TYPES } from "./constants.js";
 import { rebuildTableForSqlite } from "./sqlite/index.js";
+import { isDefinitionEnum, normalizeDefinitionDefault } from "./generics.js";
 const dbType = process.env.DATABASE_ENGINE;
 async function _tableExistsInDb(table) {
   try {
@@ -711,19 +712,67 @@ async function _handleFieldDiff(
       }
     }
   } else {
+    const enumForward = new Map();
+    const enumReverse = new Map();
     for (const [col, def] of Object.entries(newFields)) {
-      const oldDef = oldFields[col];
+      const oldDef = oldFields[col];      
       if (!oldDef || renames.some((r) => r.new === col)) continue;
 
       const oldNullable = oldDef.nullable === true;
       const newNullable = def.nullable === true;
 
+      const isEnumField = isDefinitionEnum(def);
+      const isMySQL = dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL;
+      const isPostgres = dbType === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES;
+
+      // ENUM Registration
+      if (isEnumField && isPostgres) {
+        enumForward.set(def.enumTypeName, def.choices || []);
+
+        if (oldDef.enumTypeName) {
+          enumReverse.set(oldDef.enumTypeName, oldDef.choices || []);
+        }
+      }
+
       // Type changed
       if (def.type !== oldDef.type) {
-        sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${def.type};`);
-        reverseSQL.push(
-          `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${oldDef.type};`
-        );
+        if (isEnumField) {
+          if (isPostgres) {
+            sql.push(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${def.type} USING ${col}::${def.enumTypeName};`,
+            );
+
+            reverseSQL.push(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${oldDef.type} USING ${col}::${oldDef.enumTypeName || oldDef.type};`,
+            );
+
+            for (const enumName of enumReverse.keys()) {
+              reverseSQL.push(`DROP TYPE IF EXISTS ${enumName};`);
+            }
+          } else {
+            // ENUM is inline in MySQL
+            sql.push(`ALTER TABLE ${table} MODIFY COLUMN ${col} ${def.type};`);
+
+            reverseSQL.push(
+              `ALTER TABLE ${table} MODIFY COLUMN ${col} ${oldDef.type};`,
+            );
+          }
+        } else {
+          if (isMySQL) {
+            sql.push(`ALTER TABLE ${table} MODIFY COLUMN ${col} ${def.type};`);
+            reverseSQL.push(
+              `ALTER TABLE ${table} MODIFY COLUMN ${col} ${oldDef.type};`,
+            );
+          } else {
+            sql.push(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${def.type};`,
+            );
+
+            reverseSQL.push(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${oldDef.type};`,
+            );
+          }
+        }
       }
 
       // Nullability changed
@@ -741,26 +790,36 @@ async function _handleFieldDiff(
       }
 
       // Default changed
-      if (def.default !== oldDef.default) {
-        if (def.default === undefined) {
+      const oldDefault = normalizeDefinitionDefault(oldDef.default);
+      const newDefault = normalizeDefinitionDefault(def.default);
+
+      if (oldDefault !== newDefault) {
+        if (newDefault === null) {
           sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`);
-          const oldDefVal =
-            typeof oldDef.default === "string"
-              ? `'${oldDef.default}'`
-              : oldDef.default;
-          reverseSQL.push(
-            `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${oldDefVal};`
-          );
+          if (oldDefault !== null) {
+            reverseSQL.push(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${oldDefault};`,
+            );
+          }
         } else {
-          const defVal =
-            typeof def.default === "string" ? `'${def.default}'` : def.default;
           sql.push(
-            `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${defVal};`
+            `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${newDefault};`,
           );
           reverseSQL.push(
-            `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`
+            `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`,
           );
         }
+      }
+    }
+
+    if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES) {
+      for (const [enumName, choices] of enumForward) {
+        sql.unshift(`DROP TYPE IF EXISTS ${enumName} CASCADE;`);
+        sql.unshift(
+          `CREATE TYPE ${enumName} AS ENUM (${choices
+            .map((c) => `'${c}'`)
+            .join(", ")});`,
+        );
       }
     }
   }
@@ -991,24 +1050,51 @@ export async function _generateCreateTableSQL(
     if (def.default === undefined || def.default === null) return "";
 
     let defaultVal = def.default;
+
+    if (def.enumTypeName) {
+      // Postgres ENUM requires cast
+      if (engine === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES) {
+        return ` DEFAULT '${defaultVal}'::${def.enumTypeName}`;
+      }
+
+      /** I'm unsure this lower block of code will ever be true though as I made enumTypeName available only for Postgres */
+      if (engine === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL) {
+        return ` DEFAULT '${defaultVal}'`;
+      }
+      return ` DEFAULT '${defaultVal}'`;
+    }
+
     if (typeof defaultVal === "string") {
-      // Escape single quotes for strings
       defaultVal = defaultVal.replace(/'/g, "''");
       return ` DEFAULT '${defaultVal}'`;
     }
+
     if (defaultVal === "CURRENT_TIMESTAMP") {
       if (engine === SUPPORTED_SQL_DIALECTS_TYPES.SQLITE)
         return " DEFAULT CURRENT_TIMESTAMP";
-      return ` DEFAULT ${defaultVal}`; // Works for all
+      return ` DEFAULT ${defaultVal}`;
     }
+
     return ` DEFAULT ${defaultVal}`;
   };
+
 
   const added = Object.keys(newModel.fields);
   let hasAutoIncInPk = false;
 
   for (const col of added) {
     const def = newModel.fields[col];
+
+    if (engine === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES && def.enumTypeName) {
+      sql.push(`DROP TYPE IF EXISTS ${def.enumTypeName} CASCADE;`);
+      sql.push(
+        `CREATE TYPE ${def.enumTypeName} AS ENUM (${def.choices
+          .map((c) => `'${c}'`)
+          .join(", ")});`,
+      );
+      reverseSQL.push(`DROP TYPE IF EXISTS ${def.enumTypeName};`);
+    }
+
     let columnSQLdef = getIdentifierQuote(col);
 
     let baseType = def.type.toUpperCase();

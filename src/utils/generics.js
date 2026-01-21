@@ -23,3 +23,22 @@ export function generateChecksum(obj) {
     .update(JSON.stringify(canonicalObj))
     .digest("hex");
 }
+
+
+export function isDefinitionEnum(def) {
+  return (
+    typeof def?.enumTypeName === "string" ||
+    def?.type?.toLowerCase().startsWith("enum")
+  );
+}
+
+export function normalizeDefinitionDefault(def) {
+  if (def === undefined || def === null) return null;
+
+  let d = String(def).trim();
+  d = d.replace(/::[\w_]+/g, "");
+  if (!d.startsWith("'") && isNaN(d)) {
+    d = `'${d}'`;
+  }
+  return d;
+}
