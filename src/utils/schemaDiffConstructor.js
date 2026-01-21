@@ -745,8 +745,8 @@ async function _handleFieldDiff(
 
       // Type changed
       if (def.type !== oldDef.type) {
-        const oldDefault = normalizeDefault(oldDef.default);
-        const newDefault = normalizeDefault(def.default);
+        const oldDefault = normalizeDefinitionDefault(oldDef.default);
+        const newDefault = normalizeDefinitionDefault(def.default);
         if (isEnumField) {
           if (isPostgres) {
             // Drop old default
