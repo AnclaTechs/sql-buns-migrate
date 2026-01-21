@@ -184,6 +184,7 @@ export const EnumField = (options = {}) => {
       null: rest.null,
       comment: rest.comment,
       dialect,
+      enumTypeName,
     };
     return _normalizeOptions(json);
   };
