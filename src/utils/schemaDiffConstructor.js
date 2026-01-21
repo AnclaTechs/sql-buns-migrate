@@ -745,20 +745,8 @@ async function _handleFieldDiff(
 
       // Type changed
       if (def.type !== oldDef.type) {
-        const oldDefault = normalizeDefinitionDefault(oldDef.default);
-        const newDefault = normalizeDefinitionDefault(def.default);
         if (isEnumField) {
           if (isPostgres) {
-            // Drop old default
-            if (oldDefault !== null) {
-              sql.push(
-                `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`,
-              );
-              reverseSQL.push(
-                `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT '${oldDefault}'::${oldDef.type};`,
-              );
-            }
-
             // Alter type safely with text cast
             sql.push(
               `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${def.type} USING ${col}::text::${def.enumTypeName};`,
@@ -766,16 +754,6 @@ async function _handleFieldDiff(
             reverseSQL.push(
               `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${oldDef.type} USING ${col}::text::${oldDef.type};`,
             );
-
-            // Set new default
-            if (newDefault !== null) {
-              sql.push(
-                `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT '${newDefault}'::${def.type};`,
-              );
-              reverseSQL.push(
-                `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`,
-              );
-            }
 
             // Drop enums in reverse after columns reverted
             for (const enumName of enumReverse.keys()) {
@@ -826,20 +804,40 @@ async function _handleFieldDiff(
       const newDefault = normalizeDefinitionDefault(def.default);
 
       if (oldDefault !== newDefault) {
-        if (newDefault === null) {
-          sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`);
+        if (isEnumField && isPostgres) {
+          // Drop old default
           if (oldDefault !== null) {
+            sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`);
             reverseSQL.push(
-              `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${oldDefault};`,
+              `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${oldDefault}::${oldDef.type};`,
+            );
+          }
+
+          // Set new default
+          if (newDefault !== null) {
+            sql.push(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${newDefault}::${def.type};`,
+            );
+            reverseSQL.push(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`,
             );
           }
         } else {
-          sql.push(
-            `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${newDefault};`,
-          );
-          reverseSQL.push(
-            `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`,
-          );
+          if (newDefault === null) {
+            sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`);
+            if (oldDefault !== null) {
+              reverseSQL.push(
+                `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${oldDefault};`,
+              );
+            }
+          } else {
+            sql.push(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${newDefault};`,
+            );
+            reverseSQL.push(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`,
+            );
+          }
         }
       }
     }
