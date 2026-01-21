@@ -1133,8 +1133,8 @@ export async function _generateCreateTableSQL(
 
   // Build full CREATE TABLE
   const quotedTable = getIdentifierQuote(table);
-  let tableSQL = `CREATE TABLE IF NOT EXISTS "${quotedTable}" (\n  ${columns.join(
-    ",\n  "
+  let tableSQL = `CREATE TABLE IF NOT EXISTS ${quotedTable} (\n  ${columns.join(
+    ",\n  ",
   )}\n);`;
 
   const dropTableSQL = `DROP TABLE IF EXISTS ${
