@@ -1,6 +1,6 @@
 {
   "name": "@anclatechs/sql-buns-migrate",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "description": "Official migration and schema management tool for anclatechs/sql-buns. Designed to define, version, and evolve your database schema seamlessly, supports PostgreSQL, MySQL, and SQLite.",
   "main": "src/dist/index.js",
   "types": "src/dist/index.d.ts",
