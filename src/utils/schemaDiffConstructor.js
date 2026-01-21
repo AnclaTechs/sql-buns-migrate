@@ -814,12 +814,12 @@ async function _handleFieldDiff(
 
     if (dbType === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES) {
       for (const [enumName, choices] of enumForward) {
-        sql.unshift(`DROP TYPE IF EXISTS ${enumName} CASCADE;`);
         sql.unshift(
           `CREATE TYPE ${enumName} AS ENUM (${choices
             .map((c) => `'${c}'`)
             .join(", ")});`,
         );
+        sql.unshift(`DROP TYPE IF EXISTS ${enumName} CASCADE;`);
       }
     }
   }
@@ -1086,12 +1086,12 @@ export async function _generateCreateTableSQL(
     const def = newModel.fields[col];
 
     if (engine === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES && def.enumTypeName) {
-      sql.push(`DROP TYPE IF EXISTS ${def.enumTypeName} CASCADE;`);
       sql.push(
         `CREATE TYPE ${def.enumTypeName} AS ENUM (${def.choices
           .map((c) => `'${c}'`)
           .join(", ")});`,
       );
+      sql.push(`DROP TYPE IF EXISTS ${def.enumTypeName} CASCADE;`);
       reverseSQL.push(`DROP TYPE IF EXISTS ${def.enumTypeName};`);
     }
 
