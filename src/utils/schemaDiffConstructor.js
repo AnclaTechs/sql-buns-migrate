@@ -727,25 +727,57 @@ async function _handleFieldDiff(
 
       // ENUM Registration
       if (isEnumField && isPostgres) {
-        enumForward.set(def.enumTypeName, def.choices || []);
+        const forwardChoices = def.choices || [];
+        const reverseChoices = oldDef?.choices || [];
 
-        if (oldDef.enumTypeName) {
-          enumReverse.set(oldDef.enumTypeName, oldDef.choices || []);
+        const areDifferent =
+          forwardChoices.length !== reverseChoices.length ||
+          forwardChoices.some((v, i) => v !== reverseChoices[i]);
+
+        if (areDifferent) {
+          enumForward.set(def.enumTypeName, forwardChoices);
+
+          if (oldDef.enumTypeName) {
+            enumReverse.set(oldDef.enumTypeName, reverseChoices);
+          }
         }
       }
 
       // Type changed
       if (def.type !== oldDef.type) {
+        const oldDefault = normalizeDefault(oldDef.default);
+        const newDefault = normalizeDefault(def.default);
         if (isEnumField) {
           if (isPostgres) {
+            // Drop old default
+            if (oldDefault !== null) {
+              sql.push(
+                `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`,
+              );
+              reverseSQL.push(
+                `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT '${oldDefault}'::${oldDef.type};`,
+              );
+            }
+
+            // Alter type safely with text cast
             sql.push(
-              `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${def.type} USING ${col}::${def.enumTypeName};`,
+              `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${def.type} USING ${col}::text::${def.enumTypeName};`,
             );
-
             reverseSQL.push(
-              `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${oldDef.type} USING ${col}::${oldDef.enumTypeName || oldDef.type};`,
+              `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${oldDef.type} USING ${col}::text::${oldDef.type};`,
             );
 
+            // Set new default
+            if (newDefault !== null) {
+              sql.push(
+                `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT '${newDefault}'::${def.type};`,
+              );
+              reverseSQL.push(
+                `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`,
+              );
+            }
+
+            // Drop enums in reverse after columns reverted
             for (const enumName of enumReverse.keys()) {
               reverseSQL.push(`DROP TYPE IF EXISTS ${enumName};`);
             }
