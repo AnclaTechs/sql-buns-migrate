@@ -715,7 +715,7 @@ async function _handleFieldDiff(
     const enumForward = new Map();
     const enumReverse = new Map();
     for (const [col, def] of Object.entries(newFields)) {
-      const oldDef = oldFields[col];      
+      const oldDef = oldFields[col];
       if (!oldDef || renames.some((r) => r.new === col)) continue;
 
       const oldNullable = oldDef.nullable === true;
@@ -725,28 +725,16 @@ async function _handleFieldDiff(
       const isMySQL = dbType === SUPPORTED_SQL_DIALECTS_TYPES.MYSQL;
       const isPostgres = dbType === SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES;
 
-      // ENUM Registration
-      if (isEnumField && isPostgres) {
-        const forwardChoices = def.choices || [];
-        const reverseChoices = oldDef?.choices || [];
-
-        const areDifferent =
-          forwardChoices.length !== reverseChoices.length ||
-          forwardChoices.some((v, i) => v !== reverseChoices[i]);
-
-        if (areDifferent) {
-          enumForward.set(def.enumTypeName, forwardChoices);
-
-          if (oldDef.enumTypeName) {
-            enumReverse.set(oldDef.enumTypeName, reverseChoices);
-          }
-        }
-      }
-
       // Type changed
       if (def.type !== oldDef.type) {
         if (isEnumField) {
           if (isPostgres) {
+            // ENUM Registration
+            enumForward.set(def.enumTypeName, def.choices || []);
+            if (oldDef.enumTypeName) {
+              enumReverse.set(oldDef.enumTypeName, oldDef.choices || []);
+            }
+
             // Alter type safely with text cast
             sql.push(
               `ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${def.type} USING ${col}::text::${def.enumTypeName};`,
@@ -790,12 +778,12 @@ async function _handleFieldDiff(
         sql.push(
           `ALTER TABLE ${table} ALTER COLUMN ${col} ${
             newNullable ? "DROP" : "SET"
-          } NOT NULL;`
+          } NOT NULL;`,
         );
         reverseSQL.push(
           `ALTER TABLE ${table} ALTER COLUMN ${col} ${
             oldNullable ? "DROP" : "SET"
-          } NOT NULL;`
+          } NOT NULL;`,
         );
       }
 
