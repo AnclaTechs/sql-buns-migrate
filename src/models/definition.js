@@ -2,6 +2,7 @@ import {
   SUPPORTED_SQL_DIALECTS,
   SUPPORTED_SQL_DIALECTS_TYPES,
 } from "../utils/constants.js";
+import { generateEnumTypeName } from "../utils/generics.js";
 import { modelDataToJSON } from "../utils/serializeModelToJson.js";
 
 function _normalizeOptions(options, defaults = {}) {
@@ -107,7 +108,14 @@ export const TextField = (options = {}) => {
 export const EnumField = (options = {}) => {
   const supportedENUMDialects = SUPPORTED_SQL_DIALECTS;
 
-  const { choices, default: def, typeName, ...rest } = options;
+  const {
+    choices,
+    default: def,
+    typeName,
+    tableName,
+    colName,
+    ...rest
+  } = options;
 
   const dialect = process.env.DATABASE_ENGINE;
 
@@ -155,15 +163,15 @@ export const EnumField = (options = {}) => {
 
     case SUPPORTED_SQL_DIALECTS_TYPES.POSTGRES:
       enumTypeName =
-        typeName || `enum_${Math.random().toString(36).substring(2, 8)}`;
-      inlineType = enumTypeName; // references a type to be created elsewhere
+        typeName || generateEnumTypeName(tableName, colName, choices);
+      inlineType = enumTypeName; // This references a type to be created elsewhere
       break;
 
     default:
       throw new Error(
         `Unsupported SQL dialect '${dialect}'. Use ${SUPPORTED_SQL_DIALECTS.join(
-          ","
-        )}.`
+          ",",
+        )}.`,
       );
   }
 
@@ -231,14 +239,20 @@ export function defineModel(name, fields, options = {}) {
   const { relations, triggers, meta } = options;
 
   /** Normalize Fields */
-  for (const [fieldName, fieldDef] of Object.entries(fields)) {
-    const { type, ...options } = fieldDef;
-    if (typeof type === "function") {
-      normalizedFields[fieldName] = type(options);
-    } else {
-      normalizedFields[fieldName] = fieldDef;
-    }
-  }
+ for (const [fieldName, fieldDef] of Object.entries(fields)) {
+   const { type, ...options } = fieldDef;
+   if (typeof type === "function") {
+     if (options.choices) {
+       options.tableName = name;
+       options.colName = fieldName;
+     }
+     normalizedFields[fieldName] = type(options);
+   } else {
+     // 22-01-2026 : I'm unsure of why i made some fields normalized with the type() constructor and this without. But I will get back to this
+     normalizedFields[fieldName] = fieldDef;
+   }
+ }
+
 
   /**
    *  Validate & Normalize Relations

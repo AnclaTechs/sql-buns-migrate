@@ -24,7 +24,6 @@ export function generateChecksum(obj) {
     .digest("hex");
 }
 
-
 export function isDefinitionEnum(def) {
   return (
     typeof def?.enumTypeName === "string" ||
@@ -41,4 +40,17 @@ export function normalizeDefinitionDefault(def) {
     d = `'${d}'`;
   }
   return d;
+}
+
+export function generateEnumTypeName(table, column, choices) {
+  const base = `${table}_${column}`;
+  const sortedChoices = [...choices].sort();
+  const signature = `${base}:${sortedChoices.join("|")}`;
+  const hash = crypto
+    .createHash("sha1")
+    .update(signature)
+    .digest("hex")
+    .slice(0, 8);
+
+  return `enum_${base}_${hash}`;
 }
