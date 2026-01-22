@@ -791,11 +791,16 @@ async function _handleFieldDiff(
       const oldDefault = normalizeDefinitionDefault(oldDef.default);
       const newDefault = normalizeDefinitionDefault(def.default);
 
-      if (oldDefault !== newDefault) {
+      if (
+        oldDefault !== newDefault ||
+        (isEnumField && def.type !== oldDef.type)
+      ) {
         if (isEnumField && isPostgres) {
           // Drop old default
           if (oldDefault !== null) {
-            sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`);
+            sql.unshift(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`,
+            );
             reverseSQL.push(
               `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${oldDefault}::${oldDef.type};`,
             );
@@ -812,7 +817,9 @@ async function _handleFieldDiff(
           }
         } else {
           if (newDefault === null) {
-            sql.push(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`);
+            sql.unshift(
+              `ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT;`,
+            );
             if (oldDefault !== null) {
               reverseSQL.push(
                 `ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${oldDefault};`,
